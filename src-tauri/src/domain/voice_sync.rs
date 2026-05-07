@@ -24,6 +24,25 @@ pub struct VoiceSyncEndpointSet {
     pub timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteVoiceInfo {
+    #[serde(alias = "voice_name")]
+    pub voice_name: String,
+    #[serde(default, rename = "type")]
+    pub voice_type: String,
+    #[serde(default, alias = "reference_text")]
+    pub reference_text: String,
+    #[serde(default, alias = "reference_audio")]
+    pub reference_audio: String,
+    #[serde(default, alias = "voice_instruction")]
+    pub voice_instruction: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, alias = "updated_at")]
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceSyncReport {

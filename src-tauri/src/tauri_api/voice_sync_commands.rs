@@ -6,7 +6,7 @@ use crate::{
         error::{ApiError, ApiResult},
         state::AppState,
     },
-    domain::voice_sync::VoiceSyncReport,
+    domain::voice_sync::{RemoteVoiceInfo, VoiceSyncReport},
     services::voice_sync_manager::parse_incremental_operation,
 };
 
@@ -25,6 +25,12 @@ pub fn sync_voices_full(state: State<'_, AppState>) -> ApiResult<VoiceSyncReport
         .voice_sync()
         .full_sync(state.voice_library(), &settings)
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_remote_voices(state: State<'_, AppState>) -> ApiResult<Vec<RemoteVoiceInfo>> {
+    let settings = state.settings().load_or_default().map_err(ApiError::from)?;
+    state.voice_sync().list_remote(&settings).map_err(Into::into)
 }
 
 #[tauri::command]

@@ -15,9 +15,9 @@
         "label": "main",
         "title": "voice-cloner",
         "width": 1440,
-        "height": 900,
-        "minWidth": 980,
-        "minHeight": 680,
+        "height": 1000,
+        "minWidth": 1440,
+        "minHeight": 1000,
         "resizable": true,
         "center": true
       }

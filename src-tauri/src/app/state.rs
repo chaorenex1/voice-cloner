@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use crate::{
-    audio::{device_manager::AudioDeviceManager, engine::AudioEngine, virtual_mic::SelectableVirtualMicAdapter},
+    audio::{
+        device_manager::AudioDeviceManager, engine::AudioEngine, preview_player::VoicePreviewPlayer,
+        virtual_mic::SelectableVirtualMicAdapter,
+    },
     services::{
         asset_cache::AssetCache, offline_job_manager::OfflineJobManager, session_manager::SessionManager,
-        settings_manager::SettingsManager, voice_design_manager::VoiceDesignManager, voice_library::VoiceLibrary,
-        voice_sync_manager::VoiceSyncManager,
+        realtime_stream_manager::RealtimeStreamManager, settings_manager::SettingsManager,
+        voice_design_manager::VoiceDesignManager, voice_library::VoiceLibrary, voice_sync_manager::VoiceSyncManager,
     },
     storage::app_paths::AppPaths,
 };
@@ -16,7 +19,9 @@ pub struct AppState {
     settings: Arc<SettingsManager>,
     audio_devices: Arc<AudioDeviceManager>,
     audio_engine: Arc<AudioEngine>,
+    voice_preview: Arc<VoicePreviewPlayer>,
     virtual_mic: Arc<SelectableVirtualMicAdapter>,
+    realtime_streams: Arc<RealtimeStreamManager>,
     sessions: Arc<SessionManager>,
     offline_jobs: Arc<OfflineJobManager>,
     asset_cache: Arc<AssetCache>,
@@ -42,7 +47,9 @@ impl AppState {
             settings: Arc::new(settings),
             audio_devices: Arc::new(AudioDeviceManager::default()),
             audio_engine: Arc::new(AudioEngine::default()),
+            voice_preview: Arc::new(VoicePreviewPlayer::default()),
             virtual_mic: Arc::new(virtual_mic),
+            realtime_streams: Arc::new(RealtimeStreamManager::default()),
             sessions: Arc::new(SessionManager::default()),
             offline_jobs: Arc::new(OfflineJobManager::default()),
             asset_cache: Arc::new(asset_cache),
@@ -68,8 +75,20 @@ impl AppState {
         &self.audio_engine
     }
 
+    pub fn voice_preview(&self) -> &VoicePreviewPlayer {
+        &self.voice_preview
+    }
+
     pub fn virtual_mic(&self) -> &SelectableVirtualMicAdapter {
         &self.virtual_mic
+    }
+
+    pub fn virtual_mic_handle(&self) -> Arc<SelectableVirtualMicAdapter> {
+        Arc::clone(&self.virtual_mic)
+    }
+
+    pub fn realtime_streams(&self) -> &RealtimeStreamManager {
+        &self.realtime_streams
     }
 
     pub fn sessions(&self) -> &SessionManager {

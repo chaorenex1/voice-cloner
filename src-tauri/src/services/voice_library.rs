@@ -36,6 +36,28 @@ impl VoiceLibrary {
         self.write_profile(profile)
     }
 
+    pub fn save_custom_voice_wav_bytes(
+        &self,
+        mut profile: CustomVoiceProfile,
+        wav_file_name: &str,
+        wav_bytes: &[u8],
+    ) -> AppResult<CustomVoiceProfile> {
+        require_wav_file_name(wav_file_name)?;
+        if wav_bytes.is_empty() {
+            return Err(AppError::offline_job("referenceAudioBytes is required"));
+        }
+        let voice_name = require_voice_name(&profile.voice_name)?;
+        profile.voice_name = voice_name.clone();
+        profile.sync_status = SyncStatus::PendingSync;
+        if profile.created_at.timestamp_millis() == 0 {
+            profile.created_at = Utc::now();
+        }
+        let target_path = self.audio_path(&voice_name)?;
+        std::fs::write(&target_path, wav_bytes).map_err(|source| AppError::io("writing custom voice wav", source))?;
+        profile.reference_audio_path = target_path.to_string_lossy().into_owned();
+        self.write_profile(profile)
+    }
+
     pub fn mark_sync_status(&self, voice_name: &str, sync_status: SyncStatus) -> AppResult<CustomVoiceProfile> {
         let mut profile = self.get_custom_voice(voice_name)?;
         profile.sync_status = sync_status.clone();
@@ -120,6 +142,12 @@ impl VoiceLibrary {
     fn store_reference_audio(&self, voice_name: &str, source_audio_path: &str) -> AppResult<String> {
         let source_audio_path = require_non_empty("referenceAudioPath", source_audio_path)?;
         let source_path = PathBuf::from(source_audio_path);
+        require_wav_file_name(
+            source_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default(),
+        )?;
         if !source_path.exists() {
             return Err(AppError::offline_job(format!(
                 "reference audio file not found: {}",
@@ -165,6 +193,19 @@ fn require_non_empty(field: &str, value: &str) -> AppResult<String> {
         Err(AppError::offline_job(format!("{field} is required")))
     } else {
         Ok(trimmed.to_string())
+    }
+}
+
+fn require_wav_file_name(value: &str) -> AppResult<()> {
+    if PathBuf::from(value)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("wav"))
+        == Some(true)
+    {
+        Ok(())
+    } else {
+        Err(AppError::offline_job("reference audio must be a .wav file"))
     }
 }
 

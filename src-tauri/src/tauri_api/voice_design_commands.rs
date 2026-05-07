@@ -1,3 +1,5 @@
+use chrono::Utc;
+use serde::Deserialize;
 use tauri::State;
 
 use crate::{
@@ -11,6 +13,17 @@ use crate::{
         CreateVoiceDesignDraftRequest, FailVoiceDesignDraftRequest, SaveVoiceDesignDraftRequest,
     },
 };
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveCustomVoiceProfileRequest {
+    pub voice_name: String,
+    pub voice_instruction: String,
+    pub reference_text: String,
+    pub reference_audio_path: Option<String>,
+    pub reference_audio_file_name: Option<String>,
+    pub reference_audio_bytes: Option<Vec<u8>>,
+}
 
 #[tauri::command]
 pub fn create_voice_design_draft(
@@ -114,4 +127,34 @@ pub fn list_custom_voices(state: State<'_, AppState>) -> ApiResult<Vec<CustomVoi
 #[tauri::command]
 pub fn get_custom_voice(state: State<'_, AppState>, voice_name: String) -> ApiResult<CustomVoiceProfile> {
     state.voice_library().get_custom_voice(&voice_name).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn save_custom_voice_profile(
+    state: State<'_, AppState>,
+    request: SaveCustomVoiceProfileRequest,
+) -> ApiResult<CustomVoiceProfile> {
+    let profile = CustomVoiceProfile {
+        voice_name: request.voice_name,
+        source_prompt_text: None,
+        asr_text: None,
+        voice_instruction: request.voice_instruction,
+        reference_audio_path: request.reference_audio_path.unwrap_or_default(),
+        reference_text: request.reference_text,
+        sync_status: crate::domain::voice::SyncStatus::PendingSync,
+        last_synced_at: None,
+        created_at: Utc::now(),
+    };
+
+    match request.reference_audio_bytes {
+        Some(bytes) => state
+            .voice_library()
+            .save_custom_voice_wav_bytes(
+                profile,
+                request.reference_audio_file_name.as_deref().unwrap_or("reference.wav"),
+                &bytes,
+            )
+            .map_err(Into::into),
+        None => state.voice_library().save_custom_voice(profile).map_err(Into::into),
+    }
 }

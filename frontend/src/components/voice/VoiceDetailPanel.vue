@@ -4,6 +4,7 @@ import type { VoiceDetail } from '../../utils/types/voice';
 defineProps<{
   detail: VoiceDetail | null;
   saving: boolean;
+  playing: boolean;
 }>();
 
 defineEmits<{
@@ -42,7 +43,9 @@ defineEmits<{
           </span>
         </div>
         <div class="detail-actions">
-          <button class="ghost-button" type="button" @click="$emit('preview')">试听</button>
+          <button class="ghost-button" type="button" @click="$emit('preview')">
+            {{ playing ? '停止试听' : '试听' }}
+          </button>
           <button
             class="primary-button"
             type="button"
@@ -107,8 +110,10 @@ defineEmits<{
       <div class="audio-panel">
         <div>
           <p class="module-eyebrow">参考音频</p>
-          <strong>{{ detail.referenceAudioPath ?? '尚未上传参考音频' }}</strong>
-          <span>波形预览区会在接入真实音频后展示实际样本。</span>
+          <strong>{{
+            detail.referenceAudioFileName ?? detail.referenceAudioPath ?? '尚未上传参考音频'
+          }}</strong>
+          <span>只支持 wav 参考音频，试听会使用设置页选择的输出设备。</span>
         </div>
         <div class="audio-actions">
           <button

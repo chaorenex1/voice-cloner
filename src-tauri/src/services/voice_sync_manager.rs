@@ -7,10 +7,13 @@ use crate::{
         error::{AppError, AppResult},
         trace::TraceId,
     },
+    clients::funspeech::voice_manager::{
+        delete_remote_voice, list_remote_voices, refresh_remote_voices, sync_voice_asset,
+    },
     domain::{
         settings::AppSettings,
         voice::SyncStatus,
-        voice_sync::{VoiceSyncEndpointSet, VoiceSyncOperation, VoiceSyncReport, VoiceSyncState},
+        voice_sync::{RemoteVoiceInfo, VoiceSyncEndpointSet, VoiceSyncOperation, VoiceSyncReport, VoiceSyncState},
     },
     services::voice_library::VoiceLibrary,
     storage::json_store::JsonStore,
@@ -36,16 +39,28 @@ impl VoiceSyncManager {
         settings.validate().map_err(AppError::invalid_settings)?;
         let endpoints = VoiceSyncEndpointSet::from_backend_config(&settings.backend.tts);
         let local_voice_count = library.list_custom_voices()?.len();
+        let (sync_status, message) = match list_remote_voices(&settings.backend.tts) {
+            Ok(voices) => (
+                None,
+                format!("loaded {} FunSpeech voices from /voices/v1/list", voices.len()),
+            ),
+            Err(error) => (Some(SyncStatus::Failed), error.to_string()),
+        };
         self.push_report(VoiceSyncReport {
             operation: VoiceSyncOperation::FullSync,
             trace_id: TraceId::new("voice-sync").into_string(),
             endpoint_url: endpoints.sync_url,
             voice_name: None,
             local_voice_count,
-            sync_status: None,
-            message: "full sync endpoint prepared; real FunSpeech pull is not connected yet".into(),
+            sync_status,
+            message,
             created_at: Utc::now(),
         })
+    }
+
+    pub fn list_remote(&self, settings: &AppSettings) -> AppResult<Vec<RemoteVoiceInfo>> {
+        settings.validate().map_err(AppError::invalid_settings)?;
+        list_remote_voices(&settings.backend.tts)
     }
 
     pub fn register_voice(
@@ -109,15 +124,26 @@ impl VoiceSyncManager {
     ) -> AppResult<VoiceSyncReport> {
         settings.validate().map_err(AppError::invalid_settings)?;
         let endpoints = VoiceSyncEndpointSet::from_backend_config(&settings.backend.tts);
+        let remote_result = delete_remote_voice(&settings.backend.tts, voice_name);
         let deleted = library.delete_custom_voice(voice_name)?;
+        let (sync_status, message) = match remote_result {
+            Ok(()) => (
+                SyncStatus::Synced,
+                "deleted locally and synced to FunSpeech".to_string(),
+            ),
+            Err(error) => (
+                SyncStatus::Failed,
+                format!("deleted locally; FunSpeech delete failed: {error}"),
+            ),
+        };
         self.push_report(VoiceSyncReport {
             operation: VoiceSyncOperation::Delete,
             trace_id: TraceId::new("voice-sync").into_string(),
             endpoint_url: endpoints.delete_url,
             voice_name: Some(deleted.voice_name),
             local_voice_count: library.list_custom_voices()?.len(),
-            sync_status: Some(SyncStatus::Synced),
-            message: "delete sync marked complete locally; real FunSpeech request is not connected yet".into(),
+            sync_status: Some(sync_status),
+            message,
             created_at: Utc::now(),
         })
     }
@@ -125,14 +151,18 @@ impl VoiceSyncManager {
     pub fn refresh_runtime(&self, library: &VoiceLibrary, settings: &AppSettings) -> AppResult<VoiceSyncReport> {
         settings.validate().map_err(AppError::invalid_settings)?;
         let endpoints = VoiceSyncEndpointSet::from_backend_config(&settings.backend.tts);
+        let (sync_status, message) = match refresh_remote_voices(&settings.backend.tts) {
+            Ok(()) => (None, "FunSpeech voice runtime refreshed".to_string()),
+            Err(error) => (Some(SyncStatus::Failed), error.to_string()),
+        };
         self.push_report(VoiceSyncReport {
             operation: VoiceSyncOperation::Refresh,
             trace_id: TraceId::new("voice-sync").into_string(),
             endpoint_url: endpoints.refresh_url,
             voice_name: None,
             local_voice_count: library.list_custom_voices()?.len(),
-            sync_status: None,
-            message: "voice runtime refresh endpoint prepared; real FunSpeech request is not connected yet".into(),
+            sync_status,
+            message,
             created_at: Utc::now(),
         })
     }
@@ -151,16 +181,28 @@ impl VoiceSyncManager {
     ) -> AppResult<VoiceSyncReport> {
         settings.validate().map_err(AppError::invalid_settings)?;
         let endpoints = VoiceSyncEndpointSet::from_backend_config(&settings.backend.tts);
-        let profile = library.mark_sync_status(voice_name, target_status.clone())?;
+        let profile = library.get_custom_voice(voice_name)?;
+        let remote_result = sync_voice_asset(&settings.backend.tts, &profile, operation == VoiceSyncOperation::Update);
+        let (saved, status, message) = match remote_result {
+            Ok(()) => (
+                library.mark_sync_status(voice_name, target_status.clone())?,
+                target_status.clone(),
+                "synced custom voice to FunSpeech voice_manager".to_string(),
+            ),
+            Err(error) => (
+                library.mark_sync_status(voice_name, SyncStatus::Failed)?,
+                SyncStatus::Failed,
+                error.to_string(),
+            ),
+        };
         self.push_report(VoiceSyncReport {
             endpoint_url: endpoint_for_operation(&endpoints, &operation),
             operation,
             trace_id: TraceId::new("voice-sync").into_string(),
-            voice_name: Some(profile.voice_name),
+            voice_name: Some(saved.voice_name),
             local_voice_count: library.list_custom_voices()?.len(),
-            sync_status: Some(target_status),
-            message: "incremental voice sync marked complete locally; real FunSpeech request is not connected yet"
-                .into(),
+            sync_status: Some(status),
+            message,
             created_at: Utc::now(),
         })
     }
@@ -257,14 +299,14 @@ mod tests {
 
         let full = manager.full_sync(&library, &settings).unwrap();
         assert_eq!(full.operation, VoiceSyncOperation::FullSync);
-        assert!(full.endpoint_url.ends_with("/voices/v1/sync"));
+        assert!(full.endpoint_url.ends_with("/voices/v1/list"));
 
         let registered = manager.register_voice("sync-me", &library, &settings).unwrap();
-        assert_eq!(registered.sync_status, Some(SyncStatus::Synced));
+        assert_eq!(registered.sync_status, Some(SyncStatus::Failed));
         assert!(registered.endpoint_url.ends_with("/voices/v1/register"));
         assert_eq!(
             library.get_custom_voice("sync-me").unwrap().sync_status,
-            SyncStatus::Synced
+            SyncStatus::Failed
         );
 
         let updated = manager.update_voice("sync-me", &library, &settings).unwrap();

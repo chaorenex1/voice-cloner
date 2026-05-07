@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core';
 import { computed, onMounted, ref } from 'vue';
+import RealtimeVoicePage from './pages/RealtimeVoicePage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import VoiceLibraryPage from './pages/VoiceLibraryPage.vue';
 
@@ -55,12 +56,14 @@ const currentModule = computed(
   () => navItems.find((item) => item.key === activeNavKey.value) ?? defaultNavItem
 );
 
-const hasImplementedPage = computed(() => ['voices', 'settings'].includes(activeNavKey.value));
+const hasImplementedPage = computed(() =>
+  ['voices', 'realtime', 'settings'].includes(activeNavKey.value)
+);
 
 onMounted(async () => {
   try {
     appSummary.value = await invoke<AppSummary>('get_app_summary');
-    backendState.value = 'Tauri 后端已连接';
+    backendState.value = '已连接';
   } catch (_error) {
     backendState.value = '前端预览模式';
   }
@@ -104,6 +107,7 @@ onMounted(async () => {
 
     <main class="main-content" aria-live="polite">
       <VoiceLibraryPage v-if="activeNavKey === 'voices'" />
+      <RealtimeVoicePage v-else-if="activeNavKey === 'realtime'" />
       <SettingsPage v-else-if="activeNavKey === 'settings'" />
 
       <section

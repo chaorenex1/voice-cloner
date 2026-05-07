@@ -4,24 +4,35 @@ import VoiceDetailPanel from '../components/voice/VoiceDetailPanel.vue';
 import VoiceLibraryRail from '../components/voice/VoiceLibraryRail.vue';
 import VoiceLibraryToolbar from '../components/voice/VoiceLibraryToolbar.vue';
 import { useVoiceLibraryStore } from '../stores/voice-library.store';
+import type { WavUploadPayload } from '../services/tauri/voice-library';
 
 const {
   state,
   filteredVoices,
+  setSearch,
   loadVoices,
   selectVoice,
   updateDetail,
+  attachReferenceAudio,
   saveSelectedVoice,
   setCurrentVoice,
   createLocalVoice,
+  removeSelectedVoice,
+  previewVoice,
   runSync,
 } = useVoiceLibraryStore();
 
 const isCreating = ref(false);
-const draft = reactive({
+const draft = reactive<{
+  displayName: string;
+  referenceText: string;
+  voiceInstruction: string;
+  upload: WavUploadPayload | null;
+}>({
   displayName: '',
   referenceText: '',
-  referenceAudioPath: '',
+  voiceInstruction: '',
+  upload: null,
 });
 
 onMounted(() => {
@@ -38,41 +49,69 @@ function cancelCreate(): void {
   isCreating.value = false;
 }
 
-function submitDraft(): void {
-  if (!draft.displayName.trim() || !draft.referenceText.trim()) {
-    state.lastMessage = '新增音色需要名称和参考文本';
+async function submitDraft(): Promise<void> {
+  if (!draft.displayName.trim() || !draft.referenceText.trim() || !draft.upload) {
+    state.lastMessage = '新增音色需要名称、参考文本和 wav 参考音频';
     return;
   }
 
-  createLocalVoice({
+  await createLocalVoice({
     displayName: draft.displayName,
     referenceText: draft.referenceText,
-    referenceAudioPath: draft.referenceAudioPath,
+    voiceInstruction: draft.voiceInstruction,
+    upload: draft.upload,
   });
   draft.displayName = '';
   draft.referenceText = '';
-  draft.referenceAudioPath = '';
+  draft.voiceInstruction = '';
+  draft.upload = null;
   isCreating.value = false;
 }
 
-function previewVoice(voiceName?: string): void {
-  const target = voiceName ?? state.detail?.voiceName;
-  state.lastMessage = target ? `${target} 试听请求已进入队列` : '请选择要试听的音色';
+async function pickWavFile(): Promise<WavUploadPayload | null> {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.wav,audio/wav,audio/x-wav';
+  return new Promise((resolve) => {
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) {
+        resolve(null);
+        return;
+      }
+      if (!file.name.toLowerCase().endsWith('.wav')) {
+        state.lastMessage = '参考音频只允许选择 wav 文件';
+        resolve(null);
+        return;
+      }
+      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+      resolve({ fileName: file.name, bytes });
+    };
+    input.click();
+  });
 }
 
-function uploadAudioPlaceholder(): void {
-  updateDetail({
-    hasReferenceAudio: true,
-    referenceAudioPath: '~/voice-cloner/library/custom-voices/new-reference.wav',
-  });
-  state.lastMessage = '参考音频上传入口已占位';
+async function chooseDraftAudio(): Promise<void> {
+  draft.upload = await pickWavFile();
+  if (draft.upload) {
+    state.lastMessage = `已选择 wav 参考音频：${draft.upload.fileName}`;
+  }
+}
+
+async function chooseDetailAudio(): Promise<void> {
+  const upload = await pickWavFile();
+  if (upload) {
+    attachReferenceAudio(upload);
+  }
 }
 
 function clearAudio(): void {
   updateDetail({
     hasReferenceAudio: false,
     referenceAudioPath: undefined,
+    referenceAudioFileName: undefined,
   });
+  state.pendingReferenceAudio = null;
   state.lastMessage = '参考音频已从当前草稿中清除';
 }
 
@@ -84,8 +123,11 @@ async function syncAllVoices(): Promise<void> {
 <template>
   <section class="module-page voice-library-page">
     <VoiceLibraryToolbar
-      v-model:search="state.search"
+      :search="state.search"
       :loading="state.loading"
+      :result-count="filteredVoices.length"
+      :total-count="state.voices.length"
+      @update:search="setSearch"
       @create="startCreate"
       @sync="syncAllVoices"
       @refresh="loadVoices"
@@ -98,7 +140,7 @@ async function syncAllVoices(): Promise<void> {
         <ul>
           <li>名称保持可读，后续会转成稳定 voiceName。</li>
           <li>参考文本建议 10-30 秒音频可完整覆盖。</li>
-          <li>录音尽量干净，避免背景音乐和混响。</li>
+          <li>参考音频只允许 wav，录音尽量干净。</li>
         </ul>
       </aside>
 
@@ -117,6 +159,11 @@ async function syncAllVoices(): Promise<void> {
         </label>
 
         <label class="form-field">
+          <span>音色指令</span>
+          <input v-model="draft.voiceInstruction" placeholder="例如：低沉、稳定、播客旁白" />
+        </label>
+
+        <label class="form-field">
           <span>参考文本 *</span>
           <textarea
             v-model="draft.referenceText"
@@ -125,15 +172,16 @@ async function syncAllVoices(): Promise<void> {
           ></textarea>
         </label>
 
-        <label class="form-field">
-          <span>参考音频 *</span>
-          <input
-            v-model="draft.referenceAudioPath"
-            placeholder="~/voice-cloner/library/custom-voices/sample.wav"
-          />
-        </label>
+        <div class="audio-panel">
+          <div>
+            <p class="module-eyebrow">参考音频 *</p>
+            <strong>{{ draft.upload?.fileName ?? '尚未选择 wav 文件' }}</strong>
+            <span>文件会保存到 ~/voice-cloner/library/custom-voices/。</span>
+          </div>
+          <button class="ghost-button" type="button" @click="chooseDraftAudio">选择 wav</button>
+        </div>
 
-        <button class="primary-button" type="submit">保存音色</button>
+        <button class="primary-button" type="submit" :disabled="state.saving">保存音色</button>
       </form>
     </div>
 
@@ -141,6 +189,7 @@ async function syncAllVoices(): Promise<void> {
       <VoiceLibraryRail
         :voices="filteredVoices"
         :selected-voice-name="state.selectedVoiceName"
+        :playing-voice-name="state.playingVoiceName"
         @select="selectVoice"
         @preview="previewVoice"
         @set-current="setCurrentVoice"
@@ -149,17 +198,18 @@ async function syncAllVoices(): Promise<void> {
       <VoiceDetailPanel
         :detail="state.detail"
         :saving="state.saving"
+        :playing="state.playingVoiceName === state.detail?.voiceName"
         @update-detail="updateDetail"
         @preview="previewVoice"
         @save="saveSelectedVoice"
-        @delete="state.lastMessage = '删除命令将在 Rust 本地读写接入后启用'"
-        @upload-audio="uploadAudioPlaceholder"
+        @delete="removeSelectedVoice"
+        @upload-audio="chooseDetailAudio"
         @clear-audio="clearAudio"
       />
     </div>
 
-    <footer class="page-status-bar">
+    <!-- <footer class="page-status-bar">
       <span>{{ state.lastMessage }}</span>
-    </footer>
+    </footer> -->
   </section>
 </template>

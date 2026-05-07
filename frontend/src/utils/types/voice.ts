@@ -1,4 +1,4 @@
-export type VoiceSource = 'preset' | 'custom';
+export type VoiceSource = 'preset' | 'custom' | 'remote';
 
 export type VoiceSyncStatus = 'synced' | 'localOnly' | 'remoteChanged' | 'failed';
 
@@ -20,6 +20,7 @@ export interface VoiceDetail extends VoiceSummary {
   voiceInstruction?: string;
   referenceText: string;
   referenceAudioPath?: string;
+  referenceAudioFileName?: string;
   previewAudioPath?: string;
   editable: boolean;
 }
@@ -28,6 +29,7 @@ export interface VoiceMutationResult {
   voiceName: string;
   message: string;
   updatedAt: string;
+  syncStatus: VoiceSyncStatus;
 }
 
 export interface SyncVoicesRequest {

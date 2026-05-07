@@ -31,6 +31,49 @@ impl AudioDeviceManager {
         self.list_devices(AudioDeviceKind::Output)
     }
 
+    pub fn output_device_by_id(&self, device_id: Option<&str>) -> AppResult<cpal::Device> {
+        self.device_by_id(AudioDeviceKind::Output, device_id)
+    }
+
+    pub fn input_device_by_id(&self, device_id: Option<&str>) -> AppResult<cpal::Device> {
+        self.device_by_id(AudioDeviceKind::Input, device_id)
+    }
+
+    fn device_by_id(&self, kind: AudioDeviceKind, device_id: Option<&str>) -> AppResult<cpal::Device> {
+        let host = cpal::default_host();
+        let Some(device_id) = device_id.filter(|value| !value.trim().is_empty()) else {
+            return match kind {
+                AudioDeviceKind::Input => host
+                    .default_input_device()
+                    .ok_or_else(|| AppError::audio("default input device is unavailable")),
+                AudioDeviceKind::Output => host
+                    .default_output_device()
+                    .ok_or_else(|| AppError::audio("default output device is unavailable")),
+            };
+        };
+        let devices = match kind {
+            AudioDeviceKind::Input => host
+                .input_devices()
+                .map_err(|error| AppError::audio(error.to_string()))?
+                .collect::<Vec<_>>(),
+            AudioDeviceKind::Output => host
+                .output_devices()
+                .map_err(|error| AppError::audio(error.to_string()))?
+                .collect::<Vec<_>>(),
+        };
+        for (index, device) in devices.into_iter().enumerate() {
+            let name = device
+                .name()
+                .unwrap_or_else(|_| format!("Unknown {kind:?} device {index}"));
+            if stable_device_id(kind, index, &name) == device_id {
+                return Ok(device);
+            }
+        }
+        Err(AppError::audio(format!(
+            "selected {kind:?} device is unavailable: {device_id}"
+        )))
+    }
+
     pub fn default_devices(&self) -> AppResult<DefaultAudioDevices> {
         let host = cpal::default_host();
         Ok(DefaultAudioDevices {
