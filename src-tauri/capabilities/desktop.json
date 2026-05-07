@@ -1,0 +1,15 @@
+{
+  "identifier": "desktop",
+  "description": "Default capabilities for the voice-cloner app skeleton",
+  "platforms": ["macOS", "windows", "linux"],
+  "webviews": ["main"],
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:app:default",
+    "core:app:allow-name",
+    "core:app:allow-version",
+    "core:app:allow-tauri-version"
+  ]
+}

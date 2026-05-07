@@ -1,0 +1,17 @@
+{
+  "name": "voice-cloner",
+  "version": "0.1.0",
+  "description": "Minimal Tauri + Vue skeleton for the voice-cloner desktop app.",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --dir frontend dev",
+    "build": "pnpm --dir frontend build",
+    "preview": "pnpm --dir frontend preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
