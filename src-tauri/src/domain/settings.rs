@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendConfig {
-    pub provider_name: String,
     pub base_url: String,
     pub api_key_ref: Option<String>,
     pub model: Option<String>,
@@ -18,7 +17,6 @@ pub struct BackendConfig {
 impl BackendConfig {
     pub fn local_llm_default() -> Self {
         Self {
-            provider_name: "local-llm".into(),
             base_url: "http://127.0.0.1:11434".into(),
             api_key_ref: None,
             model: None,
@@ -30,7 +28,6 @@ impl BackendConfig {
 
     pub fn funspeech_default() -> Self {
         Self {
-            provider_name: "funspeech".into(),
             base_url: "http://127.0.0.1:8000".into(),
             api_key_ref: None,
             model: None,
@@ -41,9 +38,6 @@ impl BackendConfig {
     }
 
     pub fn validate(&self, label: &str) -> Result<(), String> {
-        if self.provider_name.trim().is_empty() {
-            return Err(format!("{label}.providerName is required"));
-        }
         if self.base_url.trim().is_empty() {
             return Err(format!("{label}.baseUrl is required"));
         }
@@ -130,12 +124,7 @@ pub struct AppSettings {
 
 impl AppSettings {
     pub fn normalize_for_local_save(&mut self) {
-        if self.backend.llm.provider_name.trim().is_empty() {
-            self.backend.llm.provider_name = BackendConfig::local_llm_default().provider_name;
-        }
-        let funspeech_provider = BackendConfig::funspeech_default().provider_name;
         for config in [&mut self.backend.asr, &mut self.backend.tts, &mut self.backend.realtime] {
-            config.provider_name = funspeech_provider.clone();
             config.model = None;
         }
     }
@@ -257,10 +246,6 @@ mod tests {
     fn default_settings_match_mvp_boundaries() {
         let settings = AppSettings::default();
 
-        assert_eq!(settings.backend.llm.provider_name, "local-llm");
-        assert_eq!(settings.backend.asr.provider_name, "funspeech");
-        assert_eq!(settings.backend.tts.provider_name, "funspeech");
-        assert_eq!(settings.backend.realtime.provider_name, "funspeech");
         assert_eq!(settings.runtime.default_output_format, "wav");
         assert_eq!(settings.runtime.audio_frame_ms, 20);
         assert!(settings.validate().is_ok());
@@ -286,7 +271,6 @@ mod tests {
 
         assert_eq!(settings.device.input_device_id.as_deref(), Some("mic-1"));
         assert_eq!(settings.runtime.default_voice_name.as_deref(), Some("narrator"));
-        assert_eq!(settings.backend.tts.provider_name, "funspeech");
         assert!(settings.device.virtual_mic_enabled);
         assert_eq!(settings.device.virtual_mic_device_id.as_deref(), Some("virtual-mic-1"));
     }

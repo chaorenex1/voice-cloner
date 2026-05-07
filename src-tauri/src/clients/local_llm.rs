@@ -5,7 +5,6 @@ use crate::domain::settings::BackendConfig;
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalLlmEndpoint {
-    pub provider_name: String,
     pub generate_url: String,
     pub model: Option<String>,
     pub timeout_ms: u64,
@@ -14,7 +13,6 @@ pub struct LocalLlmEndpoint {
 impl LocalLlmEndpoint {
     pub fn from_backend_config(config: &BackendConfig) -> Self {
         Self {
-            provider_name: config.provider_name.clone(),
             generate_url: format!("{}/api/generate", config.base_url.trim_end_matches('/')),
             model: config.model.clone(),
             timeout_ms: config.timeout_ms,

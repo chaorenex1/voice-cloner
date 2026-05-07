@@ -5,7 +5,6 @@ use crate::domain::settings::BackendConfig;
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OfflineEndpoints {
-    pub provider_name: String,
     pub asr_url: String,
     pub tts_url: String,
     pub openai_tts_url: String,
@@ -15,7 +14,6 @@ pub struct OfflineEndpoints {
 impl OfflineEndpoints {
     pub fn from_backend_configs(asr: &BackendConfig, tts: &BackendConfig) -> Self {
         Self {
-            provider_name: tts.provider_name.clone(),
             asr_url: rest_url(&asr.base_url, "/stream/v1/asr"),
             tts_url: rest_url(&tts.base_url, "/stream/v1/tts"),
             openai_tts_url: rest_url(&tts.base_url, "/openai/v1/audio/speech"),

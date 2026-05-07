@@ -17,7 +17,6 @@ const mockSettings: AppSettings = {
   },
   backend: {
     llm: {
-      providerName: 'local-llm',
       baseUrl: 'http://127.0.0.1:11434',
       apiKeyRef: null,
       model: 'qwen2.5:latest',
@@ -26,7 +25,6 @@ const mockSettings: AppSettings = {
       extraOptions: {},
     },
     asr: {
-      providerName: 'funspeech',
       baseUrl: 'http://127.0.0.1:8000',
       apiKeyRef: null,
       model: null,
@@ -35,7 +33,6 @@ const mockSettings: AppSettings = {
       extraOptions: {},
     },
     tts: {
-      providerName: 'funspeech',
       baseUrl: 'http://127.0.0.1:8000',
       apiKeyRef: null,
       model: null,
@@ -44,7 +41,6 @@ const mockSettings: AppSettings = {
       extraOptions: {},
     },
     realtime: {
-      providerName: 'funspeech',
       baseUrl: 'http://127.0.0.1:8000',
       apiKeyRef: null,
       model: null,
@@ -84,18 +80,11 @@ export async function updateSettings(settings: AppSettings): Promise<AppSettings
     ...settings,
     backend: {
       ...settings.backend,
-      llm: {
-        ...settings.backend.llm,
-        providerName: settings.backend.llm.providerName.trim() || 'local-llm',
-      },
       asr: { ...settings.backend.asr, model: null },
       tts: { ...settings.backend.tts, model: null },
       realtime: { ...settings.backend.realtime, model: null },
     },
   };
-  nextSettings.backend.asr.providerName = 'funspeech';
-  nextSettings.backend.tts.providerName = 'funspeech';
-  nextSettings.backend.realtime.providerName = 'funspeech';
 
   return invokeWithMockFallback('update_app_settings', () => structuredClone(nextSettings), {
     patch: {

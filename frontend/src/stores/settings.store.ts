@@ -32,7 +32,7 @@ const state = reactive<SettingsState>({
 let dirtyRevision = 0;
 
 function cloneSettings(settings: AppSettings): AppSettings {
-  return structuredClone(settings);
+  return JSON.parse(JSON.stringify(settings)) as AppSettings;
 }
 
 export function useSettingsStore() {

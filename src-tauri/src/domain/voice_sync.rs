@@ -16,7 +16,6 @@ pub enum VoiceSyncOperation {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceSyncEndpointSet {
-    pub provider_name: String,
     pub sync_url: String,
     pub register_url: String,
     pub update_url: String,

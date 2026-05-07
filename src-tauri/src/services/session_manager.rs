@@ -61,7 +61,6 @@ impl SessionManager {
             trace_id: TraceId::new("realtime").into_string(),
             voice_name: voice_name.to_string(),
             runtime_params: request.runtime_params,
-            backend_name: endpoint.provider_name,
             status: RealtimeSessionStatus::Idle,
             websocket_url: endpoint.websocket_url,
             error_summary: None,
@@ -211,7 +210,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(created.status, RealtimeSessionStatus::Idle);
-        assert_eq!(created.backend_name, "funspeech");
         assert!(created.websocket_url.ends_with("/ws/v1/realtime/voice"));
 
         let running = manager.start_realtime_session(&created.session_id, &audio).unwrap();

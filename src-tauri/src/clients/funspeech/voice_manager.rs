@@ -4,7 +4,6 @@ impl VoiceSyncEndpointSet {
     pub fn from_backend_config(config: &BackendConfig) -> Self {
         let base = config.base_url.trim_end_matches('/');
         Self {
-            provider_name: config.provider_name.clone(),
             sync_url: format!("{base}/voices/v1/sync"),
             register_url: format!("{base}/voices/v1/register"),
             update_url: format!("{base}/voices/v1/update"),

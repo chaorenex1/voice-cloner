@@ -21,7 +21,6 @@ pub struct RealtimeSession {
     pub trace_id: String,
     pub voice_name: String,
     pub runtime_params: RuntimeParams,
-    pub backend_name: String,
     pub status: RealtimeSessionStatus,
     pub websocket_url: String,
     pub error_summary: Option<String>,

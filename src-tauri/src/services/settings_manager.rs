@@ -65,7 +65,7 @@ mod tests {
         let manager = SettingsManager::new(test_settings_path());
 
         let defaults = manager.load_or_default().unwrap();
-        assert_eq!(defaults.backend.realtime.provider_name, "funspeech");
+        assert_eq!(defaults.backend.realtime.model, None);
 
         let updated = manager
             .update(AppSettingsPatch {
@@ -89,13 +89,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_manager_normalizes_hidden_provider_fields_before_saving() {
+    fn settings_manager_normalizes_hidden_funspeech_model_before_saving() {
         let manager = SettingsManager::new(test_settings_path());
         manager.load_or_default().unwrap();
         let mut llm = AppSettings::default().backend.llm;
-        llm.provider_name = " ".into();
+        llm.model = Some("qwen".into());
         let mut realtime = AppSettings::default().backend.realtime;
-        realtime.provider_name = "custom-provider-from-old-ui".into();
         realtime.model = Some("stale-funspeech-model".into());
 
         let saved = manager
@@ -109,8 +108,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(saved.backend.llm.provider_name, "local-llm");
-        assert_eq!(saved.backend.realtime.provider_name, "funspeech");
+        assert_eq!(saved.backend.llm.model.as_deref(), Some("qwen"));
         assert_eq!(saved.backend.realtime.model, None);
     }
 }

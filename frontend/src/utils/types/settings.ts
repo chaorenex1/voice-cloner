@@ -25,7 +25,6 @@ export interface DeviceSettings {
 }
 
 export interface BackendEndpointConfig {
-  providerName: string;
   baseUrl: string;
   apiKeyRef: string | null;
   model: string | null;

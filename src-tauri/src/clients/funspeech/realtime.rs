@@ -5,7 +5,6 @@ use crate::domain::settings::BackendConfig;
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RealtimeEndpoint {
-    pub provider_name: String,
     pub websocket_url: String,
     pub timeout_ms: u64,
 }
@@ -22,7 +21,6 @@ impl RealtimeEndpoint {
         };
 
         Self {
-            provider_name: config.provider_name.clone(),
             websocket_url: format!("{websocket_base}/ws/v1/realtime/voice"),
             timeout_ms: config.timeout_ms,
         }
@@ -43,6 +41,5 @@ mod tests {
         let endpoint = RealtimeEndpoint::from_backend_config(&config);
 
         assert_eq!(endpoint.websocket_url, "wss://voice.example.com/ws/v1/realtime/voice");
-        assert_eq!(endpoint.provider_name, "funspeech");
     }
 }
