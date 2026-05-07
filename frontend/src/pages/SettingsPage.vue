@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, watch } from 'vue';
 import BackendSettingsForm from '../components/settings/BackendSettingsForm.vue';
 import DeviceSettingsForm from '../components/settings/DeviceSettingsForm.vue';
 import SettingsSectionTabs from '../components/settings/SettingsSectionTabs.vue';
@@ -16,12 +16,28 @@ const {
 } = useSettingsStore();
 
 // const activeTitle = computed(() => (state.activeSection === 'devices' ? '设备设置' : '后端设置'));
+const props = defineProps<{
+  returnTarget?: string | null;
+}>();
+
+defineEmits<{
+  back: [];
+}>();
+
+function ensureDeviceSectionForReturn(): void {
+  if (props.returnTarget === 'realtime') {
+    setSection('devices');
+  }
+}
 
 onMounted(() => {
+  ensureDeviceSectionForReturn();
   if (!state.settings) {
     void loadSettings();
   }
 });
+
+watch(() => props.returnTarget, ensureDeviceSectionForReturn);
 </script>
 
 <template>
@@ -32,6 +48,14 @@ onMounted(() => {
         <!-- <h2>{{ activeTitle }}</h2> -->
         <p class="module-description">管理音频设备、虚拟麦克风、FunSpeech 和 LLM 后端连接。</p>
       </div>
+      <button
+        v-if="returnTarget === 'realtime'"
+        class="ghost-button"
+        type="button"
+        @click="$emit('back')"
+      >
+        返回实时通话
+      </button>
     </header>
 
     <SettingsSectionTabs :active-section="state.activeSection" @change="setSection" />

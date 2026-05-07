@@ -3,7 +3,6 @@ import type {
   SyncVoicesRequest,
   VoiceDetail,
   VoiceMutationResult,
-  VoiceSource,
   VoiceSummary,
   VoiceSyncResult,
   VoiceSyncStatus,
@@ -12,22 +11,13 @@ import { getSettings, updateSettings } from './settings';
 
 interface CustomVoiceProfile {
   voiceName: string;
+  sourcePromptText?: string | null;
   voiceInstruction: string;
   referenceAudioPath: string;
   referenceText: string;
   syncStatus: 'localOnly' | 'pendingSync' | 'synced' | 'failed' | 'conflict';
   lastSyncedAt: string | null;
   createdAt: string;
-}
-
-interface RemoteVoiceInfo {
-  voiceName: string;
-  type?: string;
-  referenceText?: string;
-  referenceAudio?: string;
-  voiceInstruction?: string;
-  status?: string;
-  updatedAt?: string;
 }
 
 interface VoiceSyncReport {
@@ -50,7 +40,17 @@ export interface CreateCustomVoiceRequest {
   upload: WavUploadPayload;
 }
 
-const remoteVoiceCache = new Map<string, VoiceDetail>();
+let customVoiceProfilesCache: CustomVoiceProfile[] | null = null;
+let customVoiceProfilesPromise: Promise<CustomVoiceProfile[]> | null = null;
+
+function cloneCustomProfiles(profiles: CustomVoiceProfile[]): CustomVoiceProfile[] {
+  return structuredClone(profiles);
+}
+
+function invalidateCustomVoiceCache(): void {
+  customVoiceProfilesCache = null;
+  customVoiceProfilesPromise = null;
+}
 
 function voiceNameFromDisplayName(displayName: string): string {
   return (
@@ -109,11 +109,12 @@ function detailFromProfile(
   currentVoiceName: string | null
 ): VoiceDetail {
   const referenceTextPreview = profile.referenceText.slice(0, 42);
+  const isRemoteImport = profile.sourcePromptText === 'funspeechRemote';
   return {
     voiceName: profile.voiceName,
     displayName: profile.voiceName,
-    source: 'custom',
-    tags: ['自定义', profile.syncStatus === 'synced' ? '已同步' : '本地'],
+    source: isRemoteImport ? 'remote' : 'custom',
+    tags: [isRemoteImport ? '云端' : '自定义', profile.syncStatus === 'synced' ? '已同步' : '本地'],
     hasReferenceAudio: Boolean(profile.referenceAudioPath),
     updatedAt: profile.lastSyncedAt ?? profile.createdAt,
     referenceTextPreview,
@@ -122,31 +123,10 @@ function detailFromProfile(
     voiceInstruction: profile.voiceInstruction,
     referenceText: profile.referenceText,
     referenceAudioPath: profile.referenceAudioPath,
-    referenceAudioFileName: `${profile.voiceName}.wav`,
-    editable: true,
-  };
-}
-
-function detailFromRemote(remote: RemoteVoiceInfo, currentVoiceName: string | null): VoiceDetail {
-  const source: VoiceSource = remote.type === 'preset' ? 'preset' : 'remote';
-  const referenceText = remote.referenceText ?? '';
-  return {
-    voiceName: remote.voiceName,
-    displayName: remote.voiceName,
-    source,
-    tags: [source === 'preset' ? '预置' : '云端', remote.status ?? 'active'],
-    hasReferenceAudio: Boolean(remote.referenceAudio),
-    updatedAt: remote.updatedAt || 'FunSpeech',
-    referenceTextPreview: referenceText.slice(0, 42),
-    syncStatus: 'remoteChanged',
-    isCurrent: currentVoiceName === remote.voiceName,
-    voiceInstruction: remote.voiceInstruction ?? '',
-    referenceText,
-    referenceAudioPath: remote.referenceAudio,
-    referenceAudioFileName: remote.referenceAudio
-      ? remote.referenceAudio.split(/[\\/]/).pop()
+    referenceAudioFileName: profile.referenceAudioPath
+      ? (profile.referenceAudioPath.split(/[\\/]/).pop() ?? `${profile.voiceName}.wav`)
       : undefined,
-    editable: false,
+    editable: !isRemoteImport,
   };
 }
 
@@ -158,44 +138,26 @@ async function currentVoiceName(): Promise<string | null> {
   }
 }
 
-async function remoteVoices(): Promise<RemoteVoiceInfo[]> {
-  try {
-    return await invoke<RemoteVoiceInfo[]>('list_remote_voices');
-  } catch (_error) {
-    return [];
+async function listCustomProfiles(): Promise<CustomVoiceProfile[]> {
+  if (customVoiceProfilesCache) {
+    return cloneCustomProfiles(customVoiceProfilesCache);
   }
+
+  customVoiceProfilesPromise ??= invoke<CustomVoiceProfile[]>('list_custom_voices')
+    .then((profiles) => {
+      customVoiceProfilesCache = cloneCustomProfiles(profiles);
+      return cloneCustomProfiles(profiles);
+    })
+    .finally(() => {
+      customVoiceProfilesPromise = null;
+    });
+
+  return cloneCustomProfiles(await customVoiceProfilesPromise);
 }
 
 export async function listVoices(): Promise<VoiceSummary[]> {
-  const [localProfiles, remoteProfiles, current] = await Promise.all([
-    invoke<CustomVoiceProfile[]>('list_custom_voices'),
-    remoteVoices(),
-    currentVoiceName(),
-  ]);
-
-  remoteVoiceCache.clear();
-  const localDetails = localProfiles.map((profile) => detailFromProfile(profile, current));
-  const byName = new Map<string, VoiceDetail>();
-  for (const detail of localDetails) {
-    byName.set(detail.voiceName, detail);
-  }
-
-  for (const remote of remoteProfiles) {
-    const remoteDetail = detailFromRemote(remote, current);
-    remoteVoiceCache.set(remoteDetail.voiceName, remoteDetail);
-    const localDetail = byName.get(remoteDetail.voiceName);
-    if (localDetail) {
-      byName.set(remoteDetail.voiceName, {
-        ...localDetail,
-        tags: [...new Set([...localDetail.tags, 'FunSpeech'])],
-        syncStatus: localDetail.syncStatus === 'localOnly' ? 'synced' : localDetail.syncStatus,
-      });
-    } else {
-      byName.set(remoteDetail.voiceName, remoteDetail);
-    }
-  }
-
-  return [...byName.values()].map(detailToSummary);
+  const [localProfiles, current] = await Promise.all([listCustomProfiles(), currentVoiceName()]);
+  return localProfiles.map((profile) => detailToSummary(detailFromProfile(profile, current)));
 }
 
 export async function getVoiceDetail(voiceName: string): Promise<VoiceDetail> {
@@ -204,14 +166,6 @@ export async function getVoiceDetail(voiceName: string): Promise<VoiceDetail> {
     const profile = await invoke<CustomVoiceProfile>('get_custom_voice', { voiceName });
     return detailFromProfile(profile, current);
   } catch (_error) {
-    const cached = remoteVoiceCache.get(voiceName);
-    if (cached) {
-      return { ...cached, isCurrent: current === voiceName };
-    }
-    const remote = (await remoteVoices()).find((voice) => voice.voiceName === voiceName);
-    if (remote) {
-      return detailFromRemote(remote, current);
-    }
     throw new Error(`音色不存在：${voiceName}`);
   }
 }
@@ -261,6 +215,7 @@ export async function createCustomVoice(
   };
   const saved = await saveProfile(detail, request.upload);
   const report = await syncVoice(saved.voiceName, 'register');
+  invalidateCustomVoiceCache();
   return {
     voiceName: saved.voiceName,
     message: report.message,
@@ -275,6 +230,7 @@ export async function saveVoiceDetail(
 ): Promise<VoiceMutationResult> {
   const saved = await saveProfile(detail, upload);
   const report = await syncVoice(saved.voiceName, 'update');
+  invalidateCustomVoiceCache();
   return {
     voiceName: saved.voiceName,
     message: report.message,
@@ -285,6 +241,7 @@ export async function saveVoiceDetail(
 
 export async function deleteVoice(voiceName: string): Promise<VoiceMutationResult> {
   const report = await invoke<VoiceSyncReport>('delete_custom_voice_sync', { voiceName });
+  invalidateCustomVoiceCache();
   return {
     voiceName,
     message: report.message,
@@ -298,6 +255,7 @@ export async function syncVoices(request: SyncVoicesRequest): Promise<VoiceSyncR
     request.mode === 'full'
       ? await invoke<VoiceSyncReport>('sync_voices_full')
       : await invoke<VoiceSyncReport>('refresh_voice_runtime');
+  invalidateCustomVoiceCache();
   return {
     mode: request.mode,
     syncedCount: report.syncStatus === 'failed' ? 0 : report.localVoiceCount,

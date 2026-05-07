@@ -34,8 +34,8 @@ export interface RealtimeState {
 
 const demoVoices: VoiceSummary[] = [
   {
-    voiceName: 'desktop_voice',
-    displayName: 'desktop_voice',
+    voiceName: '',
+    displayName: '',
     source: 'remote',
     tags: ['FunSpeech', '预览'],
     hasReferenceAudio: true,

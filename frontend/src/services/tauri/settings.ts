@@ -71,8 +71,30 @@ const mockAudioDevices: AudioDeviceSnapshot = {
   ],
 };
 
+let cachedSettings: AppSettings | null = null;
+let settingsLoadPromise: Promise<AppSettings> | null = null;
+
+function cloneSettings(settings: AppSettings): AppSettings {
+  return structuredClone(settings);
+}
+
 export async function getSettings(): Promise<AppSettings> {
-  return invokeWithMockFallback('get_app_settings', () => structuredClone(mockSettings));
+  if (cachedSettings) {
+    return cloneSettings(cachedSettings);
+  }
+
+  settingsLoadPromise ??= invokeWithMockFallback('get_app_settings', () =>
+    cloneSettings(mockSettings)
+  )
+    .then((settings) => {
+      cachedSettings = cloneSettings(settings);
+      return cloneSettings(settings);
+    })
+    .finally(() => {
+      settingsLoadPromise = null;
+    });
+
+  return cloneSettings(await settingsLoadPromise);
 }
 
 export async function updateSettings(settings: AppSettings): Promise<AppSettings> {
@@ -86,13 +108,19 @@ export async function updateSettings(settings: AppSettings): Promise<AppSettings
     },
   };
 
-  return invokeWithMockFallback('update_app_settings', () => structuredClone(nextSettings), {
-    patch: {
-      device: nextSettings.device,
-      backend: nextSettings.backend,
-      runtime: nextSettings.runtime,
-    },
-  });
+  const saved = await invokeWithMockFallback(
+    'update_app_settings',
+    () => cloneSettings(nextSettings),
+    {
+      patch: {
+        device: nextSettings.device,
+        backend: nextSettings.backend,
+        runtime: nextSettings.runtime,
+      },
+    }
+  );
+  cachedSettings = cloneSettings(saved);
+  return cloneSettings(saved);
 }
 
 export async function listAudioDevices(): Promise<AudioDeviceSnapshot> {

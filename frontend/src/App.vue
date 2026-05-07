@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from 'vue';
 import RealtimeVoicePage from './pages/RealtimeVoicePage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import VoiceLibraryPage from './pages/VoiceLibraryPage.vue';
+import { getSettings } from './services/tauri/settings';
 
 interface AppSummary {
   name: string;
@@ -50,6 +51,7 @@ const navItems: NavItem[] = [
 
 const appSummary = ref<AppSummary | null>(null);
 const activeNavKey = ref(defaultNavItem.key);
+const settingsReturnNavKey = ref<string | null>(null);
 const backendState = ref('正在连接桌面运行时...');
 
 const currentModule = computed(
@@ -61,6 +63,7 @@ const hasImplementedPage = computed(() =>
 );
 
 onMounted(async () => {
+  void getSettings().catch(() => undefined);
   try {
     appSummary.value = await invoke<AppSummary>('get_app_summary');
     backendState.value = '已连接';
@@ -68,6 +71,16 @@ onMounted(async () => {
     backendState.value = '前端预览模式';
   }
 });
+
+function openDeviceSettingsFromRealtime(): void {
+  settingsReturnNavKey.value = 'realtime';
+  activeNavKey.value = 'settings';
+}
+
+function returnFromSettings(): void {
+  activeNavKey.value = settingsReturnNavKey.value ?? defaultNavItem.key;
+  settingsReturnNavKey.value = null;
+}
 </script>
 
 <template>
@@ -88,7 +101,10 @@ onMounted(async () => {
           class="nav-item"
           :class="{ 'nav-item--active': item.key === activeNavKey }"
           type="button"
-          @click="activeNavKey = item.key"
+          @click="
+            activeNavKey = item.key;
+            settingsReturnNavKey = null;
+          "
         >
           <span class="nav-item__label">{{ item.label }}</span>
         </button>
@@ -107,8 +123,15 @@ onMounted(async () => {
 
     <main class="main-content" aria-live="polite">
       <VoiceLibraryPage v-if="activeNavKey === 'voices'" />
-      <RealtimeVoicePage v-else-if="activeNavKey === 'realtime'" />
-      <SettingsPage v-else-if="activeNavKey === 'settings'" />
+      <RealtimeVoicePage
+        v-else-if="activeNavKey === 'realtime'"
+        @open-device-settings="openDeviceSettingsFromRealtime"
+      />
+      <SettingsPage
+        v-else-if="activeNavKey === 'settings'"
+        :return-target="settingsReturnNavKey"
+        @back="returnFromSettings"
+      />
 
       <section
         v-else

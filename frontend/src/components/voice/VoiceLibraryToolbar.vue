@@ -18,7 +18,7 @@ defineEmits<{
   <header class="page-toolbar voice-toolbar">
     <div>
       <p class="module-eyebrow">Voice Library</p>
-      <h2>音色管理</h2>
+      <!-- <h2>音色管理</h2> -->
       <p class="module-description">浏览、试听、编辑和同步本地可用音色。</p>
     </div>
 

@@ -38,12 +38,22 @@ impl VoiceSyncManager {
     pub fn full_sync(&self, library: &VoiceLibrary, settings: &AppSettings) -> AppResult<VoiceSyncReport> {
         settings.validate().map_err(AppError::invalid_settings)?;
         let endpoints = VoiceSyncEndpointSet::from_backend_config(&settings.backend.tts);
-        let local_voice_count = library.list_custom_voices()?.len();
+        let mut local_voice_count = library.list_custom_voices()?.len();
         let (sync_status, message) = match list_remote_voices(&settings.backend.tts) {
-            Ok(voices) => (
-                None,
-                format!("loaded {} FunSpeech voices from /voices/v1/list", voices.len()),
-            ),
+            Ok(voices) => {
+                for voice in &voices {
+                    library.upsert_remote_voice(voice)?;
+                }
+                local_voice_count = library.list_custom_voices()?.len();
+                (
+                    None,
+                    format!(
+                        "synced {} FunSpeech voices into custom_voices; {} local voices available",
+                        voices.len(),
+                        local_voice_count
+                    ),
+                )
+            }
             Err(error) => (Some(SyncStatus::Failed), error.to_string()),
         };
         self.push_report(VoiceSyncReport {

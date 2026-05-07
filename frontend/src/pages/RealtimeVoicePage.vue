@@ -1,71 +1,40 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue';
-import { useRealtimeStore, type RealtimeParamState } from '../stores/realtime.store';
+import { useRealtimeStore } from '../stores/realtime.store';
 
 const realtime = useRealtimeStore();
+const emit = defineEmits<{
+  openDeviceSettings: [];
+}>();
 let refreshTimer: number | undefined;
-
-const statusLabel = computed(() => {
-  const status = realtime.state.session?.status ?? 'idle';
-  const websocket = realtime.state.snapshot?.websocketState;
-  if (websocket === 'error' || realtime.state.lastError) {
-    return '异常';
-  }
-  if (status === 'running') {
-    return '运行中';
-  }
-  if (status === 'connecting') {
-    return '连接中';
-  }
-  if (status === 'stopped') {
-    return '已停止';
-  }
-  return '待机';
-});
-
-const latencyLabel = computed(() =>
-  realtime.state.snapshot?.latencyMs == null ? '--' : `${realtime.state.snapshot.latencyMs}ms`
-);
-
-const inputDeviceName = computed(() => {
-  const settings = realtime.state.settings;
-  const devices = realtime.state.settings ? null : null;
-  if (!settings?.device.inputDeviceId) {
-    return '默认输入设备';
-  }
-  return devices ?? settings.device.inputDeviceId;
-});
-
-const outputDeviceName = computed(() => {
-  const settings = realtime.state.settings;
-  if (!settings?.device.outputDeviceId) {
-    return '默认输出设备';
-  }
-  return settings.device.outputDeviceId;
-});
-
-const virtualMicLabel = computed(() => {
-  const settings = realtime.state.settings;
-  if (!settings?.device.virtualMicEnabled) {
-    return '未启用';
-  }
-  if (realtime.state.snapshot?.virtualMicFrames) {
-    return `输出 ${realtime.state.snapshot.virtualMicFrames} 帧`;
-  }
-  return settings.device.virtualMicDeviceId ? '待输出' : '未选择设备';
-});
 
 const meterStyle = computed(() => {
   const peak = realtime.state.snapshot?.inputLevel.peak ?? 0;
   return { width: `${Math.min(100, Math.max(4, peak * 100))}%` };
 });
 
-const paramRows: Array<{ key: keyof RealtimeParamState; label: string; min: number; max: number; step: number }> =
-  [
-    { key: 'pitch', label: '音高', min: 0.5, max: 1.5, step: 0.05 },
-    { key: 'strength', label: '强度', min: 0, max: 2, step: 0.05 },
-    { key: 'brightness', label: '亮度', min: 0, max: 2, step: 0.05 },
-  ];
+const callHeadline = computed(() => {
+  if (realtime.state.lastError) {
+    return '声音通话中断';
+  }
+  if (realtime.isRunning.value) {
+    return '正在用当前音色通话';
+  }
+  if (realtime.state.busy) {
+    return '正在进入语音通话';
+  }
+  return '准备开始语音通话';
+});
+
+const callHint = computed(() => {
+  if (realtime.state.lastError) {
+    return realtime.state.lastError;
+  }
+  if (realtime.isRunning.value) {
+    return '你说的话会以 PCM 透传到 FunSpeech，并回到监听 / 虚拟麦克风链路。';
+  }
+  return '选择一个声音身份，点击底部按钮开始通话式实时变声。';
+});
 
 onMounted(async () => {
   await realtime.load();
@@ -82,151 +51,92 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="realtime-page" aria-labelledby="realtime-title">
-    <header class="realtime-header">
+  <section class="realtime-page realtime-call-page" aria-labelledby="realtime-title">
+    <header class="call-topbar">
       <div>
-        <p class="module-eyebrow">Realtime Voice</p>
-        <h2 id="realtime-title">实时变声</h2>
+        <p class="module-eyebrow">Voice Call</p>
       </div>
-      <div class="realtime-header__metrics" aria-label="实时状态摘要">
+      <!-- <div class="call-quality" aria-label="通话质量">
         <span :data-state="realtime.state.snapshot?.websocketState ?? realtime.state.session?.status ?? 'idle'">
-          FunSpeech {{ statusLabel }}
+          {{ statusLabel }}
         </span>
-        <span>延迟 {{ latencyLabel }}</span>
-        <span>模式 {{ realtime.state.snapshot?.audioMode ?? 'passthrough' }}</span>
-      </div>
+        <span>{{ latencyLabel }}</span>
+        <span>{{ realtime.state.snapshot?.audioMode ?? 'passthrough' }}</span>
+      </div> -->
     </header>
 
-    <div class="realtime-device-strip">
-      <span>输入：{{ inputDeviceName }}</span>
-      <span>输出：{{ outputDeviceName }}</span>
-      <span>虚拟麦克风：{{ virtualMicLabel }}</span>
-      <span>WebSocket：{{ realtime.state.snapshot?.websocketUrl ?? '等待会话' }}</span>
-    </div>
+    <div class="call-layout">
+      <main class="call-room" aria-label="语音通话房间">
+        <div class="call-room__glow" aria-hidden="true"></div>
 
-    <div class="realtime-workspace">
-      <main class="realtime-stage" aria-label="实时控制舞台">
-        <div class="voice-orb" :class="{ 'voice-orb--running': realtime.isRunning.value }">
-          <span>{{ realtime.selectedVoice.value?.displayName?.slice(0, 2) ?? '声' }}</span>
-        </div>
-
-        <div class="realtime-stage__copy">
-          <p class="stage-kicker">当前音色</p>
+        <section class="call-focus-card" :class="{ 'call-focus-card--live': realtime.isRunning.value }">
+          <div class="voice-avatar-ring">
+            <div class="voice-avatar">
+              <span>{{ realtime.selectedVoice.value?.displayName?.slice(0, 2) ?? '声' }}</span>
+            </div>
+          </div>
+          <p class="stage-kicker">当前声音身份</p>
           <h3>{{ realtime.selectedVoice.value?.displayName ?? '请选择音色' }}</h3>
-          <p>
-            {{
-              realtime.isRunning.value
-                ? 'FunSpeech WebSocket 已建立，正在进行 PCM 透传闭环。'
-                : '选择音色后即可启动协议联调；voice-cloner 只传 PCM，不承载变声模型。'
-            }}
-          </p>
-        </div>
+          <p>{{ callHeadline }}</p>
 
-        <div class="meter-card">
-          <div class="meter-card__label">
-            <span>输入电平</span>
-            <strong>{{ Math.round((realtime.state.snapshot?.inputLevel.peak ?? 0) * 100) }}%</strong>
+          <div class="call-waveform" aria-label="输入电平">
+            <span v-for="index in 18" :key="index" :style="{ '--bar': index }"></span>
           </div>
-          <div class="meter-track">
-            <span class="meter-fill" :style="meterStyle"></span>
+
+          <div class="call-meter">
+            <span class="call-meter__fill" :style="meterStyle"></span>
           </div>
-          <div class="stream-counters">
-            <span>上行 {{ realtime.state.snapshot?.sentFrames ?? 0 }} 帧</span>
-            <span>下行 {{ realtime.state.snapshot?.receivedFrames ?? 0 }} 帧</span>
-            <span>虚拟麦 {{ realtime.state.snapshot?.virtualMicFrames ?? 0 }} 帧</span>
+          <small class="call-hint">{{ callHint }}</small>
+        </section>
+
+        <div class="call-toast-row" aria-live="polite">
+          <div class="call-bubble call-bubble--system">
+            {{ realtime.state.lastError ?? realtime.state.lastMessage }}
+          </div>
+          <div v-if="realtime.isRunning.value" class="call-bubble call-bubble--voice">
+            FunSpeech 已连接，PCM 正在透传回路中。
           </div>
         </div>
 
-        <div class="realtime-actions">
+        <nav class="call-dock" aria-label="通话控制">
+          <button class="dock-button" type="button" :disabled="realtime.state.loading" @click="realtime.load">
+            <span>↻</span>
+            <small>刷新</small>
+          </button>
+          <button class="dock-button" type="button">
+            <span>🎧</span>
+            <small>监听</small>
+          </button>
           <button
             v-if="!realtime.isRunning.value"
-            class="realtime-primary"
+            class="dock-button dock-button--primary"
             type="button"
             :disabled="!realtime.canStart.value"
             @click="realtime.start"
           >
-            {{ realtime.state.busy ? '连接中...' : '开始实时变声' }}
+            <span>{{ realtime.state.busy ? '…' : '▶' }}</span>
+            <small>{{ realtime.state.busy ? '连接中' : '开始' }}</small>
           </button>
-          <button v-else class="realtime-danger" type="button" :disabled="realtime.state.busy" @click="realtime.stop">
-            停止
+          <button
+            v-else
+            class="dock-button dock-button--hangup"
+            type="button"
+            :disabled="realtime.state.busy"
+            @click="realtime.stop"
+          >
+            <span>■</span>
+            <small>挂断</small>
           </button>
-          <button class="ghost-button" type="button" :disabled="realtime.state.loading" @click="realtime.load">
-            刷新音色 / 设置
+          <button class="dock-button" type="button">
+            <span>🎙</span>
+            <small>麦克风</small>
           </button>
-        </div>
-
-        <p class="realtime-message" :class="{ 'realtime-message--error': realtime.state.lastError }">
-          {{ realtime.state.lastError ?? realtime.state.lastMessage }}
-        </p>
+          <button class="dock-button" type="button" @click="emit('openDeviceSettings')">
+            <span>⚙</span>
+            <small>设置</small>
+          </button>
+        </nav>
       </main>
-
-      <aside class="realtime-sidebar" aria-label="实时控制侧栏">
-        <section class="control-panel">
-          <div class="panel-title">
-            <span>音色</span>
-            <small>{{ realtime.state.voices.length }} 个</small>
-          </div>
-          <div class="realtime-voice-list">
-            <button
-              v-for="voice in realtime.state.voices"
-              :key="voice.voiceName"
-              class="realtime-voice-card"
-              :class="{ 'realtime-voice-card--active': voice.voiceName === realtime.state.selectedVoiceName }"
-              type="button"
-              :disabled="realtime.state.busy"
-              @click="realtime.selectVoice(voice.voiceName)"
-            >
-              <strong>{{ voice.displayName }}</strong>
-              <span>{{ voice.tags.join(' / ') || voice.source }}</span>
-            </button>
-          </div>
-        </section>
-
-        <section class="control-panel">
-          <div class="panel-title">
-            <span>常用参数</span>
-            <small>热更新</small>
-          </div>
-          <label v-for="param in paramRows" :key="param.key" class="param-row">
-            <span>{{ param.label }}</span>
-            <input
-              type="range"
-              :min="param.min"
-              :max="param.max"
-              :step="param.step"
-              :value="realtime.state.params[param.key]"
-              @change="
-                realtime.setParam(
-                  param.key,
-                  Number(($event.target as HTMLInputElement).value)
-                )
-              "
-            />
-            <strong>{{ realtime.state.params[param.key].toFixed(2) }}</strong>
-          </label>
-        </section>
-
-        <section class="control-panel control-panel--compact">
-          <div class="panel-title">
-            <span>协议事件</span>
-            <small>{{ realtime.state.snapshot?.taskId ?? '无 task' }}</small>
-          </div>
-          <dl class="protocol-list">
-            <div>
-              <dt>最后事件</dt>
-              <dd>{{ realtime.state.snapshot?.lastEvent ?? '--' }}</dd>
-            </div>
-            <div>
-              <dt>上行字节</dt>
-              <dd>{{ realtime.state.snapshot?.sentBytes ?? 0 }}</dd>
-            </div>
-            <div>
-              <dt>下行字节</dt>
-              <dd>{{ realtime.state.snapshot?.receivedBytes ?? 0 }}</dd>
-            </div>
-          </dl>
-        </section>
-      </aside>
     </div>
   </section>
 </template>

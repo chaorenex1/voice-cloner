@@ -4,7 +4,10 @@ use chrono::Utc;
 
 use crate::{
     app::error::{AppError, AppResult},
-    domain::voice::{CustomVoiceProfile, SyncStatus},
+    domain::{
+        voice::{CustomVoiceProfile, SyncStatus},
+        voice_sync::RemoteVoiceInfo,
+    },
     storage::json_store::JsonStore,
 };
 
@@ -66,6 +69,37 @@ impl VoiceLibrary {
         } else {
             profile.last_synced_at
         };
+        self.write_profile(profile)
+    }
+
+    pub fn upsert_remote_voice(&self, remote: &RemoteVoiceInfo) -> AppResult<CustomVoiceProfile> {
+        let voice_name = require_voice_name(&remote.voice_name)?;
+        let now = Utc::now();
+        let mut profile = self
+            .get_custom_voice(&voice_name)
+            .unwrap_or_else(|_| CustomVoiceProfile {
+                voice_name: voice_name.clone(),
+                source_prompt_text: Some("funspeechRemote".into()),
+                asr_text: None,
+                voice_instruction: String::new(),
+                reference_audio_path: String::new(),
+                reference_text: String::new(),
+                sync_status: SyncStatus::Synced,
+                last_synced_at: Some(now),
+                created_at: now,
+            });
+
+        if profile.voice_instruction.trim().is_empty() {
+            profile.voice_instruction = remote.voice_instruction.clone();
+        }
+        if profile.reference_audio_path.trim().is_empty() {
+            profile.reference_audio_path = remote.reference_audio.clone();
+        }
+        if profile.reference_text.trim().is_empty() {
+            profile.reference_text = remote.reference_text.clone();
+        }
+        profile.sync_status = SyncStatus::Synced;
+        profile.last_synced_at = Some(now);
         self.write_profile(profile)
     }
 
