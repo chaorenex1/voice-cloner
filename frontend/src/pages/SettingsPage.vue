@@ -11,8 +11,8 @@ const {
   setSection,
   updateDeviceSettings,
   updateBackendSettings,
+  updateFunSpeechSettings,
   saveSettings,
-  testConnections,
 } = useSettingsStore();
 
 // const activeTitle = computed(() => (state.activeSection === 'devices' ? '设备设置' : '后端设置'));
@@ -39,32 +39,18 @@ onMounted(() => {
     <div v-if="state.activeSection === 'devices'" class="settings-layout">
       <DeviceSettingsForm
         :devices="state.audioDevices"
-        :settings="state.settings?.devices ?? null"
+        :settings="state.settings?.device ?? null"
         @update="updateDeviceSettings"
+        @commit="saveSettings"
       />
     </div>
 
     <BackendSettingsForm
       v-else
-      :settings="state.settings?.backends ?? null"
+      :settings="state.settings?.backend ?? null"
       @update="updateBackendSettings"
+      @update-fun-speech="updateFunSpeechSettings"
+      @commit="saveSettings"
     />
-
-    <footer class="settings-action-bar">
-      <span>{{ state.lastMessage }}</span>
-      <div>
-        <button
-          class="ghost-button"
-          type="button"
-          :disabled="state.loading"
-          @click="testConnections"
-        >
-          测试连接
-        </button>
-        <button class="primary-button" type="button" :disabled="state.saving" @click="saveSettings">
-          保存设置
-        </button>
-      </div>
-    </footer>
   </section>
 </template>

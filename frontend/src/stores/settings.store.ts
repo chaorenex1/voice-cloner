@@ -1,23 +1,19 @@
 import { reactive } from 'vue';
-import {
-  checkBackendHealth,
-  getSettings,
-  listAudioDevices,
-  updateSettings,
-} from '../services/tauri/settings';
+import { getSettings, listAudioDevices, updateSettings } from '../services/tauri/settings';
 import type {
   AppSettings,
   AudioDeviceSnapshot,
   BackendEndpointConfig,
-  BackendHealthSnapshot,
+  BackendSettings,
   DeviceSettings,
   SettingsSection,
 } from '../utils/types/settings';
 
+const funSpeechKeys: Array<Exclude<keyof BackendSettings, 'llm'>> = ['asr', 'tts', 'realtime'];
+
 export interface SettingsState {
   settings: AppSettings | null;
   audioDevices: AudioDeviceSnapshot | null;
-  health: BackendHealthSnapshot[];
   activeSection: SettingsSection;
   loading: boolean;
   saving: boolean;
@@ -27,12 +23,17 @@ export interface SettingsState {
 const state = reactive<SettingsState>({
   settings: null,
   audioDevices: null,
-  health: [],
   activeSection: 'devices',
   loading: false,
   saving: false,
   lastMessage: '设置等待加载',
 });
+
+let dirtyRevision = 0;
+
+function cloneSettings(settings: AppSettings): AppSettings {
+  return structuredClone(settings);
+}
 
 export function useSettingsStore() {
   async function loadSettings(): Promise<void> {
@@ -41,18 +42,6 @@ export function useSettingsStore() {
       const [settings, audioDevices] = await Promise.all([getSettings(), listAudioDevices()]);
       state.settings = settings;
       state.audioDevices = audioDevices;
-      state.health = [
-        {
-          service: 'funspeech',
-          status: 'idle',
-          message: '等待测试 FunSpeech 连接',
-        },
-        {
-          service: 'llm',
-          status: 'idle',
-          message: '等待测试 LLM 后端连接',
-        },
-      ];
       state.lastMessage = '设置已加载';
     } finally {
       state.loading = false;
@@ -70,12 +59,13 @@ export function useSettingsStore() {
 
     state.settings = {
       ...state.settings,
-      devices: { ...state.settings.devices, ...patch },
+      device: { ...state.settings.device, ...patch },
     };
+    dirtyRevision += 1;
   }
 
   function updateBackendSettings(
-    key: keyof AppSettings['backends'],
+    key: keyof AppSettings['backend'],
     patch: Partial<BackendEndpointConfig>
   ): void {
     if (!state.settings) {
@@ -84,11 +74,31 @@ export function useSettingsStore() {
 
     state.settings = {
       ...state.settings,
-      backends: {
-        ...state.settings.backends,
-        [key]: { ...state.settings.backends[key], ...patch },
+      backend: {
+        ...state.settings.backend,
+        [key]: { ...state.settings.backend[key], ...patch },
       },
     };
+    dirtyRevision += 1;
+  }
+
+  function updateFunSpeechSettings(patch: Partial<BackendEndpointConfig>): void {
+    if (!state.settings) {
+      return;
+    }
+
+    const sanitizedPatch = { ...patch, model: null };
+    state.settings = {
+      ...state.settings,
+      backend: funSpeechKeys.reduce(
+        (backend, key) => ({
+          ...backend,
+          [key]: { ...backend[key], ...sanitizedPatch },
+        }),
+        { ...state.settings.backend }
+      ),
+    };
+    dirtyRevision += 1;
   }
 
   async function saveSettings(): Promise<AppSettings | null> {
@@ -96,26 +106,22 @@ export function useSettingsStore() {
       return null;
     }
 
+    const revisionAtSave = dirtyRevision;
+    const snapshot = cloneSettings(state.settings);
     state.saving = true;
     try {
-      state.settings = await updateSettings(state.settings);
-      state.lastMessage = '设置已保存';
-      return state.settings;
+      const saved = await updateSettings(snapshot);
+      if (dirtyRevision === revisionAtSave) {
+        state.settings = saved;
+        state.lastMessage = '设置已保存到本地';
+      }
+      return saved;
+    } catch (error) {
+      state.lastMessage = `设置保存失败：${error instanceof Error ? error.message : String(error)}`;
+      return null;
     } finally {
       state.saving = false;
     }
-  }
-
-  async function testConnections(): Promise<void> {
-    state.health = state.health.map((item) => ({
-      ...item,
-      status: 'checking',
-      message: '正在测试连接...',
-    }));
-
-    const result = await checkBackendHealth({ services: ['funspeech', 'llm'] });
-    state.health = result.health;
-    state.lastMessage = '连接测试完成';
   }
 
   return {
@@ -124,7 +130,7 @@ export function useSettingsStore() {
     setSection,
     updateDeviceSettings,
     updateBackendSettings,
+    updateFunSpeechSettings,
     saveSettings,
-    testConnections,
   };
 }

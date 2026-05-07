@@ -1,72 +1,43 @@
 <script setup lang="ts">
-import type { AppSettings, BackendEndpointConfig } from '../../utils/types/settings';
+import type {
+  AppSettings,
+  BackendEndpointConfig,
+  BackendSettings,
+} from '../../utils/types/settings';
+
+type BackendKey = keyof BackendSettings;
 
 defineProps<{
-  settings: AppSettings['backends'] | null;
+  settings: AppSettings['backend'] | null;
 }>();
 
 defineEmits<{
-  update: [key: keyof AppSettings['backends'], patch: Partial<BackendEndpointConfig>];
+  update: [key: BackendKey, patch: Partial<BackendEndpointConfig>];
+  updateFunSpeech: [patch: Partial<BackendEndpointConfig>];
+  commit: [];
 }>();
+
+function nullableText(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfig {
+  return settings.realtime;
+}
 </script>
 
 <template>
   <div v-if="settings" class="backend-grid">
     <section class="settings-card">
       <div class="settings-card__header">
-        <p class="module-eyebrow">FunSpeech</p>
-        <!-- <h3>FunSpeech 卡</h3> -->
-        <!-- <span>用于同步音色与调用 voice_manager。</span> -->
+        <p class="module-eyebrow">LLM Backend</p>
+        <span>用于提示词生成、文案改写与语音设计辅助。</span>
       </div>
 
       <div class="settings-form">
         <label class="form-field">
           <span>Base URL</span>
-          <input
-            :value="settings.funspeech.baseUrl"
-            @input="
-              $emit('update', 'funspeech', {
-                baseUrl: ($event.target as HTMLInputElement).value,
-              })
-            "
-          />
-        </label>
-        <label class="form-field">
-          <span>API Key </span>
-          <input
-            :value="settings.funspeech.apiKeyRef ?? ''"
-            @input="
-              $emit('update', 'funspeech', {
-                apiKeyRef: ($event.target as HTMLInputElement).value,
-              })
-            "
-          />
-        </label>
-        <label class="form-field">
-          <span>Timeout(ms)</span>
-          <input
-            :value="settings.funspeech.timeoutMs"
-            inputmode="numeric"
-            @input="
-              $emit('update', 'funspeech', {
-                timeoutMs: Number(($event.target as HTMLInputElement).value),
-              })
-            "
-          />
-        </label>
-      </div>
-    </section>
-
-    <section class="settings-card">
-      <div class="settings-card__header">
-        <p class="module-eyebrow">LLM Backend</p>
-        <!-- <h3>LLM / 语音后端卡</h3> -->
-        <!-- <span>用于后续提示词、ASR/TTS 或实时后端配置。</span> -->
-      </div>
-
-      <div class="settings-form">
-        <label class="form-field">
-          <span>LLM Base URL</span>
           <input
             :value="settings.llm.baseUrl"
             @input="
@@ -74,30 +45,36 @@ defineEmits<{
                 baseUrl: ($event.target as HTMLInputElement).value,
               })
             "
+            @blur="$emit('commit')"
           />
         </label>
+
         <label class="form-field">
-          <span>LLM Model</span>
+          <span>Model</span>
           <input
             :value="settings.llm.model ?? ''"
             @input="
               $emit('update', 'llm', {
-                model: ($event.target as HTMLInputElement).value,
+                model: nullableText(($event.target as HTMLInputElement).value),
               })
             "
+            @blur="$emit('commit')"
           />
         </label>
+
         <label class="form-field">
-          <span>API Key </span>
+          <span>API Key Ref</span>
           <input
             :value="settings.llm.apiKeyRef ?? ''"
             @input="
               $emit('update', 'llm', {
-                apiKeyRef: ($event.target as HTMLInputElement).value,
+                apiKeyRef: nullableText(($event.target as HTMLInputElement).value),
               })
             "
+            @blur="$emit('commit')"
           />
         </label>
+
         <label class="form-field">
           <span>Timeout(ms)</span>
           <input
@@ -108,6 +85,56 @@ defineEmits<{
                 timeoutMs: Number(($event.target as HTMLInputElement).value),
               })
             "
+            @blur="$emit('commit')"
+          />
+        </label>
+      </div>
+    </section>
+
+    <section class="settings-card">
+      <div class="settings-card__header">
+        <p class="module-eyebrow">FunSpeech Backend</p>
+        <span>统一配置 ASR、TTS 与实时变声连接；FunSpeech 不设置模型。</span>
+      </div>
+
+      <div class="settings-form">
+        <label class="form-field">
+          <span>Base URL</span>
+          <input
+            :value="funSpeechConfig(settings).baseUrl"
+            @input="
+              $emit('updateFunSpeech', {
+                baseUrl: ($event.target as HTMLInputElement).value,
+              })
+            "
+            @blur="$emit('commit')"
+          />
+        </label>
+
+        <label class="form-field">
+          <span>API Key Ref</span>
+          <input
+            :value="funSpeechConfig(settings).apiKeyRef ?? ''"
+            @input="
+              $emit('updateFunSpeech', {
+                apiKeyRef: nullableText(($event.target as HTMLInputElement).value),
+              })
+            "
+            @blur="$emit('commit')"
+          />
+        </label>
+
+        <label class="form-field">
+          <span>Timeout(ms)</span>
+          <input
+            :value="funSpeechConfig(settings).timeoutMs"
+            inputmode="numeric"
+            @input="
+              $emit('updateFunSpeech', {
+                timeoutMs: Number(($event.target as HTMLInputElement).value),
+              })
+            "
+            @blur="$emit('commit')"
           />
         </label>
       </div>

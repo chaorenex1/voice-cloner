@@ -8,7 +8,12 @@ defineProps<{
 
 defineEmits<{
   update: [patch: Partial<DeviceSettings>];
+  commit: [];
 }>();
+
+function normalizeDeviceId(value: string): string | null {
+  return value || null;
+}
 </script>
 
 <template>
@@ -24,10 +29,16 @@ defineEmits<{
         <span>输入设备</span>
         <select
           :value="settings.inputDeviceId ?? ''"
-          @change="$emit('update', { inputDeviceId: ($event.target as HTMLSelectElement).value })"
+          @change="
+            $emit('update', {
+              inputDeviceId: normalizeDeviceId(($event.target as HTMLSelectElement).value),
+            })
+          "
+          @blur="$emit('commit')"
         >
+          <option value="">系统默认输入设备</option>
           <option v-for="device in devices.inputDevices" :key="device.id" :value="device.id">
-            {{ device.label }}
+            {{ device.name }}{{ device.isDefault ? '（默认）' : '' }}
           </option>
         </select>
       </label>
@@ -36,26 +47,32 @@ defineEmits<{
         <span>输出设备</span>
         <select
           :value="settings.outputDeviceId ?? ''"
-          @change="$emit('update', { outputDeviceId: ($event.target as HTMLSelectElement).value })"
+          @change="
+            $emit('update', {
+              outputDeviceId: normalizeDeviceId(($event.target as HTMLSelectElement).value),
+            })
+          "
+          @blur="$emit('commit')"
         >
+          <option value="">系统默认输出设备</option>
           <option v-for="device in devices.outputDevices" :key="device.id" :value="device.id">
-            {{ device.label }}
+            {{ device.name }}{{ device.isDefault ? '（默认）' : '' }}
           </option>
         </select>
       </label>
 
-      <label class="form-field">
-        <span>虚拟麦克风</span>
-        <select
-          :value="settings.virtualMicDeviceId ?? ''"
+      <label class="toggle-field">
+        <input
+          :checked="settings.monitorEnabled"
+          type="checkbox"
           @change="
-            $emit('update', { virtualMicDeviceId: ($event.target as HTMLSelectElement).value })
+            $emit('update', {
+              monitorEnabled: ($event.target as HTMLInputElement).checked,
+            })
           "
-        >
-          <option v-for="device in devices.virtualMicDevices" :key="device.id" :value="device.id">
-            {{ device.label }}
-          </option>
-        </select>
+          @blur="$emit('commit')"
+        />
+        <span>启用本机监听</span>
       </label>
 
       <label class="toggle-field">
@@ -67,8 +84,28 @@ defineEmits<{
               virtualMicEnabled: ($event.target as HTMLInputElement).checked,
             })
           "
+          @blur="$emit('commit')"
         />
         <span>启用虚拟麦克风</span>
+      </label>
+
+      <label class="form-field">
+        <span>虚拟麦克风设备</span>
+        <select
+          :disabled="!settings.virtualMicEnabled"
+          :value="settings.virtualMicDeviceId ?? ''"
+          @change="
+            $emit('update', {
+              virtualMicDeviceId: normalizeDeviceId(($event.target as HTMLSelectElement).value),
+            })
+          "
+          @blur="$emit('commit')"
+        >
+          <option value="">选择输入设备作为虚拟麦克风</option>
+          <option v-for="device in devices.inputDevices" :key="device.id" :value="device.id">
+            {{ device.name }}{{ device.isDefault ? '（默认）' : '' }}
+          </option>
+        </select>
       </label>
     </div>
 

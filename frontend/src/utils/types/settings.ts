@@ -1,27 +1,27 @@
 export type SettingsSection = 'devices' | 'backends';
 
-export type AudioDeviceKind = 'input' | 'output' | 'virtualMic';
+export type AudioDeviceKind = 'input' | 'output';
 
 export type BackendHealthStatus = 'idle' | 'checking' | 'ok' | 'warning' | 'error';
 
 export interface AudioDevice {
   id: string;
-  label: string;
+  name: string;
   kind: AudioDeviceKind;
-  isDefault?: boolean;
+  isDefault: boolean;
 }
 
 export interface AudioDeviceSnapshot {
   inputDevices: AudioDevice[];
   outputDevices: AudioDevice[];
-  virtualMicDevices: AudioDevice[];
 }
 
 export interface DeviceSettings {
   inputDeviceId: string | null;
   outputDeviceId: string | null;
-  virtualMicDeviceId: string | null;
+  monitorEnabled: boolean;
   virtualMicEnabled: boolean;
+  virtualMicDeviceId: string | null;
 }
 
 export interface BackendEndpointConfig {
@@ -31,17 +31,27 @@ export interface BackendEndpointConfig {
   model: string | null;
   timeoutMs: number;
   region: string | null;
-  extraOptions: Record<string, unknown>;
+  extraOptions: Record<string, string>;
 }
 
 export interface BackendSettings {
-  funspeech: BackendEndpointConfig;
   llm: BackendEndpointConfig;
+  asr: BackendEndpointConfig;
+  tts: BackendEndpointConfig;
+  realtime: BackendEndpointConfig;
+}
+
+export interface RuntimeSettings {
+  defaultVoiceName: string | null;
+  defaultOutputFormat: string;
+  defaultSampleRate: number;
+  audioFrameMs: number;
 }
 
 export interface AppSettings {
-  devices: DeviceSettings;
-  backends: BackendSettings;
+  device: DeviceSettings;
+  backend: BackendSettings;
+  runtime: RuntimeSettings;
 }
 
 export interface BackendHealthSnapshot {

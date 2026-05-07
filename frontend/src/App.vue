@@ -71,10 +71,10 @@ onMounted(async () => {
   <div class="app-shell">
     <aside class="app-sider" aria-label="主导航">
       <div class="brand-block">
-        <span class="brand-mark">VC</span>
+        <!-- <span class="brand-mark">VC</span> -->
         <div>
           <p class="brand-kicker">Voice Cloner</p>
-          <h1>声音克隆工作台</h1>
+          <!-- <h1>声音克隆工作台</h1> -->
         </div>
       </div>
 
