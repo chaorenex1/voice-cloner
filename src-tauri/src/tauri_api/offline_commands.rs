@@ -37,7 +37,11 @@ pub fn create_offline_text_job(
 
 #[tauri::command]
 pub fn start_offline_job(state: State<'_, AppState>, job_id: String) -> ApiResult<OfflineJob> {
-    state.offline_jobs().start_job(&job_id).map_err(Into::into)
+    let settings = state.settings().load_or_default().map_err(ApiError::from)?;
+    state
+        .offline_jobs()
+        .start_job(&job_id, &settings, state.asset_cache())
+        .map_err(Into::into)
 }
 
 #[tauri::command]

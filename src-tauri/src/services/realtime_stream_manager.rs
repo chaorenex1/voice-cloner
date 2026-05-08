@@ -18,11 +18,13 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use crate::{
     app::error::{AppError, AppResult},
     audio::{
-        frame::{AudioFrame, AudioLevel, PcmFormat},
+        frame::{AudioFrame, AudioLevel, PcmFormat, SampleFormat},
         virtual_mic::{SelectableVirtualMicAdapter, VirtualMicAdapter},
     },
     domain::{runtime_params::RuntimeParams, session::RealtimeSession},
 };
+
+const FUNSPEECH_REALTIME_SAMPLE_RATE: u32 = 16_000;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +42,9 @@ pub struct RealtimeStreamSnapshot {
     pub latency_ms: Option<u64>,
     pub input_level: AudioLevel,
     pub virtual_mic_frames: u64,
+    pub pipeline_stage: String,
+    pub asr_text: Option<String>,
+    pub tts_text_chunks: u64,
     pub last_event: Option<String>,
     pub last_error: Option<String>,
 }
@@ -60,8 +65,26 @@ impl RealtimeStreamSnapshot {
             latency_ms: None,
             input_level: AudioLevel { rms: 0.0, peak: 0.0 },
             virtual_mic_frames: 0,
+            pipeline_stage: "connecting".into(),
+            asr_text: None,
+            tts_text_chunks: 0,
             last_event: None,
             last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum RealtimeStreamMode {
+    RealtimeVoice,
+    AsrTts { asr_url: String, tts_url: String },
+}
+
+impl RealtimeStreamMode {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::RealtimeVoice => "realtime_voice",
+            Self::AsrTts { .. } => "asr_tts",
         }
     }
 }
@@ -92,6 +115,7 @@ impl RealtimeStreamManager {
         input_device: Option<cpal::Device>,
         virtual_mic: Arc<SelectableVirtualMicAdapter>,
         write_virtual_mic: bool,
+        mode: RealtimeStreamMode,
     ) -> AppResult<RealtimeStreamSnapshot> {
         tracing::debug!(
             session_id = %session.session_id,
@@ -102,25 +126,50 @@ impl RealtimeStreamManager {
             frame_ms = format.frame_ms,
             write_virtual_mic,
             has_input_device = input_device.is_some(),
+            realtime_mode = mode.label(),
             "realtime stream start requested"
         );
         self.stop(&session.session_id).await;
 
         let snapshot = Arc::new(RwLock::new(RealtimeStreamSnapshot::pending(&session)));
+        if let RealtimeStreamMode::AsrTts { asr_url, tts_url } = &mode {
+            patch_snapshot(&snapshot, |state| {
+                state.websocket_url = format!("{asr_url} -> {tts_url}");
+                state.audio_mode = Some("asr_tts_pipeline".into());
+            });
+        }
         let (control_tx, control_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = oneshot::channel();
         let session_id = session.session_id.clone();
 
-        tokio::spawn(run_stream(
-            session,
-            format,
-            input_device,
-            virtual_mic,
-            write_virtual_mic,
-            Arc::clone(&snapshot),
-            control_rx,
-            ready_tx,
-        ));
+        match mode {
+            RealtimeStreamMode::RealtimeVoice => {
+                tokio::spawn(run_realtime_voice_stream(
+                    session,
+                    format,
+                    input_device,
+                    virtual_mic,
+                    write_virtual_mic,
+                    Arc::clone(&snapshot),
+                    control_rx,
+                    ready_tx,
+                ));
+            }
+            RealtimeStreamMode::AsrTts { asr_url, tts_url } => {
+                tokio::spawn(run_asr_tts_stream(
+                    session,
+                    format,
+                    input_device,
+                    virtual_mic,
+                    write_virtual_mic,
+                    asr_url,
+                    tts_url,
+                    Arc::clone(&snapshot),
+                    control_rx,
+                    ready_tx,
+                ));
+            }
+        }
 
         match tokio::time::timeout(Duration::from_secs(8), ready_rx).await {
             Ok(Ok(Ok(()))) => {
@@ -215,7 +264,7 @@ impl RealtimeStreamManager {
     }
 }
 
-async fn run_stream(
+async fn run_realtime_voice_stream(
     session: RealtimeSession,
     format: PcmFormat,
     input_device: Option<cpal::Device>,
@@ -234,6 +283,7 @@ async fn run_stream(
     );
     let mut ready_tx = Some(ready_tx);
     let result = async {
+        let funspeech_format = funspeech_realtime_format(format);
         let (websocket, _) = connect_async(&session.websocket_url)
             .await
             .map_err(|error| AppError::realtime_session(format!("FunSpeech websocket connect failed: {error}")))?;
@@ -244,26 +294,16 @@ async fn run_stream(
         );
         let (mut write, mut read) = websocket.split();
 
-        let started = read_json_event(&mut read).await?;
-        tracing::debug!(
-            session_id = %session.session_id,
-            trace_id = %session.trace_id,
-            event = ?event_name(&started),
-            payload = %started,
-            "FunSpeech realtime event received"
-        );
-        patch_snapshot(&snapshot, |state| apply_json_event(state, &started));
-        if event_name(&started) != Some("session_started") {
-            return Err(AppError::realtime_session(format!(
-                "expected session_started from FunSpeech, got {started}"
-            )));
-        }
-
         let configure = json!({
             "event": "configure",
+            "type": "start",
             "voice_name": session.voice_name,
+            "voiceName": session.voice_name,
+            "pipeline": "asr_tts",
             "format": "pcm",
-            "sample_rate": format.sample_rate,
+            "sample_rate": funspeech_format.sample_rate,
+            "sampleRate": funspeech_format.sample_rate,
+            "params": session.runtime_params.values,
             "parameters": session.runtime_params.values,
         });
         write
@@ -274,28 +314,45 @@ async fn run_stream(
             session_id = %session.session_id,
             trace_id = %session.trace_id,
             voice_name = %session.voice_name,
-            sample_rate = format.sample_rate,
+            sample_rate = funspeech_format.sample_rate,
             frame_ms = format.frame_ms,
             "FunSpeech configure event sent"
         );
 
-        let configured = read_json_event(&mut read).await?;
-        tracing::debug!(
-            session_id = %session.session_id,
-            trace_id = %session.trace_id,
-            event = ?event_name(&configured),
-            payload = %configured,
-            "FunSpeech realtime event received"
-        );
-        patch_snapshot(&snapshot, |state| apply_json_event(state, &configured));
-        if event_name(&configured) != Some("configured") {
+        let mut accepted = false;
+        for _ in 0..4 {
+            let event = read_json_event(&mut read).await?;
+            tracing::debug!(
+                session_id = %session.session_id,
+                trace_id = %session.trace_id,
+                event = ?event_name(&event),
+                payload = %event,
+                "FunSpeech realtime event received"
+            );
+            patch_snapshot(&snapshot, |state| apply_json_event(state, &event));
+            match event_name(&event) {
+                Some("configured" | "ready" | "session_started") => {
+                    accepted = true;
+                    break;
+                }
+                Some("error") => {
+                    return Err(AppError::realtime_session(format!(
+                        "FunSpeech realtime configure failed: {event}"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if !accepted {
             return Err(AppError::realtime_session(format!(
-                "expected configured from FunSpeech, got {configured}"
+                "expected configured/ready from FunSpeech after configure for voice {}",
+                session.voice_name
             )));
         }
 
         patch_snapshot(&snapshot, |state| {
             state.websocket_state = "running".into();
+            state.pipeline_stage = "realtime_voice_ready".into();
             state.last_error = None;
         });
         if let Some(tx) = ready_tx.take() {
@@ -309,14 +366,14 @@ async fn run_stream(
                 trace_id = %session.trace_id,
                 "starting realtime input capture thread"
             );
-            Some(spawn_input_thread(device, audio_tx.clone(), format)?)
+            Some(spawn_input_thread(device, audio_tx.clone(), funspeech_format)?)
         } else {
             tracing::debug!(
                 session_id = %session.session_id,
                 trace_id = %session.trace_id,
                 "no input device resolved; using silence source"
             );
-            spawn_silence_source(audio_tx.clone(), format);
+            spawn_silence_source(audio_tx.clone(), funspeech_format);
             None
         };
         let frame_samples = vec![0.0; format.samples_per_frame()];
@@ -333,6 +390,7 @@ async fn run_stream(
                         state.sent_frames += 1;
                         state.sent_bytes += chunk.bytes.len() as u64;
                         state.input_level = chunk.level;
+                        state.pipeline_stage = "realtime_voice_sending_audio".into();
                     });
                     if sequence % 50 == 0 {
                         tracing::debug!(
@@ -351,6 +409,8 @@ async fn run_stream(
                         RealtimeControl::UpdateParams(runtime_params) => {
                             let message = json!({
                                 "event": "update",
+                                "type": "update_params",
+                                "params": runtime_params.values,
                                 "parameters": runtime_params.values,
                             });
                             write.send(Message::Text(message.to_string())).await.map_err(websocket_error)?;
@@ -364,7 +424,9 @@ async fn run_stream(
                         RealtimeControl::SwitchVoice(voice_name) => {
                             let message = json!({
                                 "event": "switch_voice",
+                                "type": "update_voice",
                                 "voice_name": voice_name,
+                                "voiceName": voice_name,
                             });
                             write.send(Message::Text(message.to_string())).await.map_err(websocket_error)?;
                             tracing::debug!(
@@ -375,7 +437,9 @@ async fn run_stream(
                             );
                         }
                         RealtimeControl::Stop => {
-                            let _ = write.send(Message::Text(json!({"event": "stop"}).to_string())).await;
+                            let _ = write
+                                .send(Message::Text(json!({"event": "stop", "type": "stop"}).to_string()))
+                                .await;
                             tracing::debug!(
                                 session_id = %session.session_id,
                                 trace_id = %session.trace_id,
@@ -395,7 +459,15 @@ async fn run_stream(
                             let latency_ms = pending_sends
                                 .pop_front()
                                 .map(|sent_at| sent_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
-                            let samples = pcm_i16_bytes_to_f32(&bytes, format.samples_per_frame()).unwrap_or_else(|| frame_samples.clone());
+                            let samples = pcm_i16_bytes_to_f32(&bytes, funspeech_format.samples_per_frame())
+                                .map(|samples| {
+                                    resample_samples_linear(
+                                        &samples,
+                                        funspeech_format.sample_rate,
+                                        format.sample_rate,
+                                    )
+                                })
+                                .unwrap_or_else(|| frame_samples.clone());
                             let frame = AudioFrame {
                                 sequence,
                                 timestamp_ms: chrono::Utc::now().timestamp_millis(),
@@ -411,6 +483,7 @@ async fn run_stream(
                                 state.received_frames += 1;
                                 state.received_bytes += bytes.len() as u64;
                                 state.latency_ms = latency_ms;
+                                state.pipeline_stage = "realtime_voice_received_audio".into();
                                 if write_virtual_mic && virtual_mic_result.is_ok() {
                                     state.virtual_mic_frames += 1;
                                 } else if let Err(error) = &virtual_mic_result {
@@ -509,6 +582,382 @@ async fn run_stream(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_asr_tts_stream(
+    session: RealtimeSession,
+    format: PcmFormat,
+    input_device: Option<cpal::Device>,
+    virtual_mic: Arc<SelectableVirtualMicAdapter>,
+    write_virtual_mic: bool,
+    asr_url: String,
+    tts_url: String,
+    snapshot: Arc<RwLock<RealtimeStreamSnapshot>>,
+    mut control_rx: mpsc::UnboundedReceiver<RealtimeControl>,
+    ready_tx: oneshot::Sender<AppResult<()>>,
+) {
+    tracing::debug!(
+        session_id = %session.session_id,
+        trace_id = %session.trace_id,
+        voice_name = %session.voice_name,
+        %asr_url,
+        %tts_url,
+        "ASR -> TTS realtime pipeline task starting"
+    );
+    let mut ready_tx = Some(ready_tx);
+    let result = async {
+        let funspeech_format = funspeech_realtime_format(format);
+        let (asr_websocket, _) = connect_async(&asr_url)
+            .await
+            .map_err(|error| AppError::realtime_session(format!("FunSpeech ASR websocket connect failed: {error}")))?;
+        let (tts_websocket, _) = connect_async(&tts_url)
+            .await
+            .map_err(|error| AppError::realtime_session(format!("FunSpeech TTS websocket connect failed: {error}")))?;
+        let (mut asr_write, mut asr_read) = asr_websocket.split();
+        let (mut tts_write, mut tts_read) = tts_websocket.split();
+
+        let asr_task_id = pipeline_task_id("asr", &session.session_id);
+        let tts_task_id = pipeline_task_id("tts", &session.session_id);
+
+        asr_write
+            .send(Message::Text(start_transcription_message(&asr_task_id, funspeech_format).to_string()))
+            .await
+            .map_err(websocket_error)?;
+        let asr_started = read_json_event(&mut asr_read).await?;
+        patch_snapshot(&snapshot, |state| apply_asr_event(state, &asr_started));
+        if aliyun_event_name(&asr_started) != Some("TranscriptionStarted") {
+            return Err(AppError::realtime_session(format!(
+                "expected TranscriptionStarted from FunSpeech ASR, got {asr_started}"
+            )));
+        }
+
+        tts_write
+            .send(Message::Text(
+                start_synthesis_message(&tts_task_id, &session, funspeech_format).to_string(),
+            ))
+            .await
+            .map_err(websocket_error)?;
+        let tts_started = read_json_event(&mut tts_read).await?;
+        patch_snapshot(&snapshot, |state| apply_tts_event(state, &tts_started));
+        if aliyun_event_name(&tts_started) != Some("SynthesisStarted") {
+            return Err(AppError::realtime_session(format!(
+                "expected SynthesisStarted from FunSpeech TTS, got {tts_started}"
+            )));
+        }
+
+        patch_snapshot(&snapshot, |state| {
+            state.websocket_state = "running".into();
+            state.pipeline_stage = "asr_tts_ready".into();
+            state.audio_mode = Some("asr_tts_pipeline".into());
+            state.last_event = Some("asr_tts_started".into());
+            state.last_error = None;
+        });
+        if let Some(tx) = ready_tx.take() {
+            let _ = tx.send(Ok(()));
+        }
+
+        let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<RealtimeAudioChunk>();
+        let _input_stop = if let Some(device) = input_device {
+            Some(spawn_input_thread(device, audio_tx.clone(), funspeech_format)?)
+        } else {
+            spawn_silence_source(audio_tx.clone(), funspeech_format);
+            None
+        };
+        let frame_samples = vec![0.0; format.samples_per_frame()];
+        let mut sequence = 0_u64;
+        let mut pending_sends = VecDeque::<Instant>::new();
+        let mut last_synthesized_text = String::new();
+
+        loop {
+            tokio::select! {
+                Some(chunk) = audio_rx.recv() => {
+                    asr_write.send(Message::Binary(chunk.bytes.clone())).await.map_err(websocket_error)?;
+                    sequence += 1;
+                    patch_snapshot(&snapshot, |state| {
+                        state.sent_frames += 1;
+                        state.sent_bytes += chunk.bytes.len() as u64;
+                        state.input_level = chunk.level;
+                        state.pipeline_stage = "asr_receiving_audio".into();
+                    });
+                }
+                Some(control) = control_rx.recv() => {
+                    match control {
+                        RealtimeControl::UpdateParams(runtime_params) => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.last_event = Some("tts_parameters_update_ignored".into());
+                                state.last_error = Some(format!(
+                                    "FunSpeech /ws/v1/tts StartSynthesis parameters are fixed for the current session: {:?}",
+                                    runtime_params.values
+                                ));
+                            });
+                        }
+                        RealtimeControl::SwitchVoice(voice_name) => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.last_event = Some("tts_voice_switch_ignored".into());
+                                state.last_error = Some(format!(
+                                    "FunSpeech /ws/v1/tts voice is fixed until the realtime ASR->TTS session restarts: {voice_name}"
+                                ));
+                            });
+                        }
+                        RealtimeControl::Stop => {
+                            let _ = asr_write
+                                .send(Message::Text(stop_transcription_message(&asr_task_id).to_string()))
+                                .await;
+                            let _ = tts_write
+                                .send(Message::Text(stop_synthesis_message(&tts_task_id).to_string()))
+                                .await;
+                            patch_snapshot(&snapshot, |state| {
+                                state.websocket_state = "stopping".into();
+                                state.pipeline_stage = "stopping".into();
+                                state.last_event = Some("stop_requested".into());
+                            });
+                            break;
+                        }
+                    }
+                }
+                message = asr_read.next() => {
+                    match message {
+                        Some(Ok(Message::Text(text))) => {
+                            match serde_json::from_str::<Value>(&text) {
+                                Ok(value) => {
+                                    patch_snapshot(&snapshot, |state| apply_asr_event(state, &value));
+                                    if is_final_asr_event(&value) {
+                                        if let Some(asr_text) = text_from_asr_event(&value) {
+                                            let asr_text = asr_text.trim().to_string();
+                                            if !asr_text.is_empty() && asr_text != last_synthesized_text {
+                                                last_synthesized_text = asr_text.clone();
+                                                let message = run_synthesis_message(&tts_task_id, &asr_text);
+                                                tts_write.send(Message::Text(message.to_string())).await.map_err(websocket_error)?;
+                                                pending_sends.push_back(Instant::now());
+                                                patch_snapshot(&snapshot, |state| {
+                                                    state.tts_text_chunks += 1;
+                                                    state.pipeline_stage = "tts_synthesizing".into();
+                                                    state.last_event = Some("tts_text_sent".into());
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    patch_snapshot(&snapshot, |state| {
+                                        state.last_error = Some(format!("invalid FunSpeech ASR event JSON: {error}"));
+                                    });
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.websocket_state = "closed".into();
+                                state.pipeline_stage = "asr_closed".into();
+                                state.last_event = Some("asr_closed".into());
+                            });
+                            break;
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => return Err(websocket_error(error)),
+                    }
+                }
+                message = tts_read.next() => {
+                    match message {
+                        Some(Ok(Message::Binary(bytes))) => {
+                            let latency_ms = pending_sends
+                                .pop_front()
+                                .map(|sent_at| sent_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                            let samples = pcm_i16_bytes_to_f32(&bytes, funspeech_format.samples_per_frame())
+                                .map(|samples| {
+                                    resample_samples_linear(
+                                        &samples,
+                                        funspeech_format.sample_rate,
+                                        format.sample_rate,
+                                    )
+                                })
+                                .unwrap_or_else(|| frame_samples.clone());
+                            let frame = AudioFrame {
+                                sequence,
+                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                                format,
+                                samples,
+                            };
+                            let virtual_mic_result = if write_virtual_mic {
+                                virtual_mic.write_frame(&frame)
+                            } else {
+                                Ok(())
+                            };
+                            patch_snapshot(&snapshot, |state| {
+                                state.received_frames += 1;
+                                state.received_bytes += bytes.len() as u64;
+                                state.latency_ms = latency_ms;
+                                state.pipeline_stage = "tts_audio_received".into();
+                                if write_virtual_mic && virtual_mic_result.is_ok() {
+                                    state.virtual_mic_frames += 1;
+                                } else if let Err(error) = &virtual_mic_result {
+                                    state.last_error = Some(error.to_string());
+                                }
+                            });
+                        }
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                patch_snapshot(&snapshot, |state| apply_tts_event(state, &value));
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.websocket_state = "closed".into();
+                                state.pipeline_stage = "tts_closed".into();
+                                state.last_event = Some("tts_closed".into());
+                            });
+                            break;
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => return Err(websocket_error(error)),
+                    }
+                }
+            }
+        }
+
+        patch_snapshot(&snapshot, |state| {
+            if state.websocket_state != "closed" {
+                state.websocket_state = "stopped".into();
+            }
+        });
+        Ok(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        tracing::warn!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            %error,
+            "ASR -> TTS realtime pipeline task failed"
+        );
+        patch_snapshot(&snapshot, |state| {
+            state.websocket_state = "error".into();
+            state.pipeline_stage = "error".into();
+            state.last_error = Some(error.to_string());
+        });
+        if let Some(tx) = ready_tx.take() {
+            let _ = tx.send(Err(error));
+        }
+    }
+}
+
+fn pipeline_task_id(prefix: &str, session_id: &str) -> String {
+    let sanitized = session_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>();
+    format!(
+        "{prefix}_{}_{}",
+        chrono::Utc::now().timestamp_millis(),
+        sanitized.chars().take(12).collect::<String>()
+    )
+}
+
+fn funspeech_realtime_format(local_format: PcmFormat) -> PcmFormat {
+    PcmFormat {
+        sample_rate: FUNSPEECH_REALTIME_SAMPLE_RATE,
+        channels: 1,
+        sample_format: SampleFormat::I16,
+        frame_ms: local_format.frame_ms,
+    }
+}
+
+fn message_id() -> String {
+    format!("vc{:x}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default())
+}
+
+fn start_transcription_message(task_id: &str, format: PcmFormat) -> Value {
+    json!({
+        "header": {
+            "message_id": message_id(),
+            "task_id": task_id,
+            "namespace": "SpeechTranscriber",
+            "name": "StartTranscription",
+        },
+        "payload": {
+            "format": "pcm",
+            "sample_rate": format.sample_rate,
+            "enable_intermediate_result": true,
+            "enable_punctuation_prediction": true,
+            "enable_inverse_text_normalization": true,
+            "enable_voice_detection": true,
+        },
+    })
+}
+
+fn start_synthesis_message(task_id: &str, session: &RealtimeSession, format: PcmFormat) -> Value {
+    json!({
+        "header": {
+            "message_id": message_id(),
+            "task_id": task_id,
+            "namespace": "FlowingSpeechSynthesizer",
+            "name": "StartSynthesis",
+        },
+        "payload": {
+            "voice": session.voice_name,
+            "format": "PCM",
+            "sample_rate": format.sample_rate,
+            "volume": runtime_number(&session.runtime_params, "volume").unwrap_or(50.0) as i64,
+            "speech_rate": runtime_number(&session.runtime_params, "speechRate")
+                .or_else(|| runtime_number(&session.runtime_params, "speech_rate"))
+                .unwrap_or(0.0) as i64,
+            "pitch_rate": runtime_number(&session.runtime_params, "pitchRate")
+                .or_else(|| runtime_number(&session.runtime_params, "pitch_rate"))
+                .or_else(|| runtime_number(&session.runtime_params, "pitch"))
+                .unwrap_or(0.0) as i64,
+            "prompt": runtime_string(&session.runtime_params, "prompt").unwrap_or_default(),
+        },
+    })
+}
+
+fn run_synthesis_message(task_id: &str, text: &str) -> Value {
+    json!({
+        "header": {
+            "message_id": message_id(),
+            "task_id": task_id,
+            "namespace": "FlowingSpeechSynthesizer",
+            "name": "RunSynthesis",
+        },
+        "payload": {
+            "text": text,
+        },
+    })
+}
+
+fn stop_transcription_message(task_id: &str) -> Value {
+    json!({
+        "header": {
+            "message_id": message_id(),
+            "task_id": task_id,
+            "namespace": "SpeechTranscriber",
+            "name": "StopTranscription",
+        },
+    })
+}
+
+fn stop_synthesis_message(task_id: &str) -> Value {
+    json!({
+        "header": {
+            "message_id": message_id(),
+            "task_id": task_id,
+            "namespace": "FlowingSpeechSynthesizer",
+            "name": "StopSynthesis",
+        },
+    })
+}
+
+fn runtime_number(params: &RuntimeParams, key: &str) -> Option<f64> {
+    params.values.get(key).and_then(Value::as_f64)
+}
+
+fn runtime_string(params: &RuntimeParams, key: &str) -> Option<String> {
+    params.values.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn json_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
 async fn read_json_event<S>(read: &mut S) -> AppResult<Value>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
@@ -561,14 +1010,14 @@ fn spawn_silence_source(tx: mpsc::UnboundedSender<RealtimeAudioChunk>, format: P
 fn spawn_input_thread(
     device: cpal::Device,
     tx: mpsc::UnboundedSender<RealtimeAudioChunk>,
-    _format: PcmFormat,
+    target_format: PcmFormat,
 ) -> AppResult<std_mpsc::Sender<()>> {
     let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
     let (ready_tx, ready_rx) = std_mpsc::channel::<AppResult<()>>();
     thread::Builder::new()
         .name("realtime-input-capture".into())
         .spawn(move || {
-            let result = start_input_stream_on_thread(device, tx);
+            let result = start_input_stream_on_thread(device, tx, target_format);
             match result {
                 Ok(stream) => {
                     let _ = ready_tx.send(Ok(()));
@@ -595,6 +1044,7 @@ fn spawn_input_thread(
 fn start_input_stream_on_thread(
     device: cpal::Device,
     tx: mpsc::UnboundedSender<RealtimeAudioChunk>,
+    target_format: PcmFormat,
 ) -> AppResult<cpal::Stream> {
     let supported_config = device
         .default_input_config()
@@ -602,24 +1052,25 @@ fn start_input_stream_on_thread(
     let sample_format = supported_config.sample_format();
     let config: StreamConfig = supported_config.into();
     let channels = config.channels.max(1) as usize;
+    let input_sample_rate = config.sample_rate.0;
     let err_fn = |error| tracing::warn!(%error, "realtime input stream error");
 
     let stream = match sample_format {
         CpalSampleFormat::F32 => device.build_input_stream(
             &config,
-            move |data: &[f32], _| send_input_chunk(data, channels, &tx),
+            move |data: &[f32], _| send_input_chunk(data, channels, input_sample_rate, target_format, &tx),
             err_fn,
             None,
         ),
         CpalSampleFormat::I16 => device.build_input_stream(
             &config,
-            move |data: &[i16], _| send_input_chunk(data, channels, &tx),
+            move |data: &[i16], _| send_input_chunk(data, channels, input_sample_rate, target_format, &tx),
             err_fn,
             None,
         ),
         CpalSampleFormat::U16 => device.build_input_stream(
             &config,
-            move |data: &[u16], _| send_input_chunk(data, channels, &tx),
+            move |data: &[u16], _| send_input_chunk(data, channels, input_sample_rate, target_format, &tx),
             err_fn,
             None,
         ),
@@ -656,6 +1107,8 @@ impl RealtimeInputSample for u16 {
 fn send_input_chunk<T: Copy + RealtimeInputSample>(
     data: &[T],
     channels: usize,
+    input_sample_rate: u32,
+    target_format: PcmFormat,
     tx: &mpsc::UnboundedSender<RealtimeAudioChunk>,
 ) {
     if data.is_empty() {
@@ -666,12 +1119,38 @@ fn send_input_chunk<T: Copy + RealtimeInputSample>(
         let mixed = frame.iter().map(|sample| (*sample).to_f32()).sum::<f32>() / frame.len() as f32;
         mono.push(mixed.clamp(-1.0, 1.0));
     }
-    let level = crate::audio::frame::measure_level(&mono);
-    let mut bytes = Vec::with_capacity(mono.len() * std::mem::size_of::<i16>());
-    for sample in mono {
+    let resampled = resample_samples_linear(&mono, input_sample_rate, target_format.sample_rate);
+    let level = crate::audio::frame::measure_level(&resampled);
+    let mut bytes = Vec::with_capacity(resampled.len() * std::mem::size_of::<i16>());
+    for sample in resampled {
         bytes.extend_from_slice(&((sample * i16::MAX as f32) as i16).to_le_bytes());
     }
     let _ = tx.send(RealtimeAudioChunk { bytes, level });
+}
+
+fn resample_samples_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+    if samples.is_empty() || source_rate == 0 || target_rate == 0 {
+        return Vec::new();
+    }
+    if source_rate == target_rate {
+        return samples.to_vec();
+    }
+
+    let target_len = ((samples.len() as u64 * target_rate as u64) / source_rate as u64).max(1) as usize;
+    if target_len == 1 {
+        return vec![samples[0]];
+    }
+
+    let scale = (samples.len() - 1) as f32 / (target_len - 1) as f32;
+    (0..target_len)
+        .map(|index| {
+            let source_position = index as f32 * scale;
+            let left = source_position.floor() as usize;
+            let right = (left + 1).min(samples.len() - 1);
+            let fraction = source_position - left as f32;
+            samples[left] + (samples[right] - samples[left]) * fraction
+        })
+        .collect()
 }
 
 fn pcm_i16_bytes_to_f32(bytes: &[u8], min_samples: usize) -> Option<Vec<f32>> {
@@ -689,7 +1168,99 @@ fn pcm_i16_bytes_to_f32(bytes: &[u8], min_samples: usize) -> Option<Vec<f32>> {
 }
 
 fn event_name(value: &Value) -> Option<&str> {
-    value.get("event").and_then(Value::as_str)
+    value
+        .get("event")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("type").and_then(Value::as_str))
+}
+
+fn aliyun_event_name(value: &Value) -> Option<&str> {
+    value
+        .get("header")
+        .and_then(|header| header.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| event_name(value))
+}
+
+fn aliyun_status_message(value: &Value) -> Option<String> {
+    let header = value.get("header")?;
+    header
+        .get("status_text")
+        .or_else(|| header.get("status_message"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn text_from_asr_event(value: &Value) -> Option<&str> {
+    value
+        .get("text")
+        .or_else(|| value.get("result"))
+        .or_else(|| value.get("transcript"))
+        .or_else(|| value.get("payload").and_then(|payload| payload.get("text")))
+        .or_else(|| value.get("payload").and_then(|payload| payload.get("result")))
+        .and_then(Value::as_str)
+}
+
+fn is_final_asr_event(value: &Value) -> bool {
+    aliyun_event_name(value) == Some("SentenceEnd")
+        || value
+            .get("payload")
+            .and_then(|payload| payload.get("is_final"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn apply_asr_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
+    if let Some(event) = aliyun_event_name(value) {
+        state.last_event = Some(format!("asr_{event}"));
+        match event {
+            "TranscriptionStarted" => {
+                state.pipeline_stage = "asr_ready".into();
+            }
+            "TranscriptionResultChanged" | "SentenceEnd" => {
+                state.pipeline_stage = "asr_text_received".into();
+            }
+            "TranscriptionCompleted" => {
+                state.pipeline_stage = "asr_completed".into();
+            }
+            "TaskFailed" => {
+                state.websocket_state = "error".into();
+                state.last_error = aliyun_status_message(value);
+            }
+            _ => {}
+        }
+    }
+    if let Some(text) = text_from_asr_event(value) {
+        state.asr_text = Some(text.to_string());
+        state.pipeline_stage = "asr_text_received".into();
+    }
+    if event_name(value) == Some("error") {
+        state.websocket_state = "error".into();
+        state.last_error = value.get("message").and_then(Value::as_str).map(str::to_string);
+    }
+}
+
+fn apply_tts_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
+    if let Some(event) = aliyun_event_name(value) {
+        state.last_event = Some(format!("tts_{event}"));
+        match event {
+            "configured" | "synthesis_started" | "SynthesisStarted" => {
+                state.pipeline_stage = "tts_ready".into();
+            }
+            "synthesis_completed" | "SynthesisCompleted" => {
+                state.pipeline_stage = "tts_completed".into();
+            }
+            "error" | "TaskFailed" => {
+                state.websocket_state = "error".into();
+                state.last_error = value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| aliyun_status_message(value));
+            }
+            _ => {}
+        }
+    }
 }
 
 fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
@@ -698,24 +1269,30 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
         match event {
             "session_started" => {
                 state.websocket_state = "connected".into();
-                state.task_id = value.get("task_id").and_then(Value::as_str).map(str::to_string);
-                state.audio_mode = value.get("audio_mode").and_then(Value::as_str).map(str::to_string);
+                state.task_id = json_string(value, "task_id").or_else(|| json_string(value, "session_id"));
+                state.audio_mode = json_string(value, "audio_mode");
             }
-            "configured" | "voice_switched" => {
+            "configured" | "ready" | "voice_switched" | "voice_updated" => {
                 state.websocket_state = "running".into();
-                if let Some(voice_name) = value.get("voice_name").and_then(Value::as_str) {
+                if let Some(task_id) = json_string(value, "task_id").or_else(|| json_string(value, "session_id")) {
+                    state.task_id = Some(task_id);
+                }
+                if let Some(audio_mode) = json_string(value, "audio_mode") {
+                    state.audio_mode = Some(audio_mode);
+                }
+                if let Some(voice_name) = json_string(value, "voice_name").or_else(|| json_string(value, "voiceName")) {
                     state.configured_voice_name = voice_name.to_string();
                 }
             }
-            "parameters_updated" => {
+            "parameters_updated" | "params_updated" => {
                 state.websocket_state = "running".into();
             }
-            "session_completed" => {
+            "session_completed" | "closed" => {
                 state.websocket_state = "stopped".into();
             }
             "error" => {
                 state.websocket_state = "error".into();
-                state.last_error = value.get("message").and_then(Value::as_str).map(str::to_string);
+                state.last_error = json_string(value, "message");
             }
             _ => {}
         }
@@ -728,4 +1305,131 @@ fn patch_snapshot(snapshot: &Arc<RwLock<RealtimeStreamSnapshot>>, patch: impl Fn
 
 fn websocket_error(error: tokio_tungstenite::tungstenite::Error) -> AppError {
     AppError::realtime_session(format!("FunSpeech websocket error: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::{
+        audio::frame::PcmFormat,
+        domain::{
+            runtime_params::RuntimeParams,
+            session::{RealtimeSession, RealtimeSessionStatus},
+        },
+    };
+
+    use super::{
+        apply_asr_event, apply_json_event, apply_tts_event, funspeech_realtime_format, is_final_asr_event,
+        resample_samples_linear, run_synthesis_message, start_synthesis_message, start_transcription_message,
+        text_from_asr_event,
+        RealtimeStreamSnapshot,
+    };
+
+    #[test]
+    fn asr_tts_messages_follow_funspeech_aliyun_protocol() {
+        let local_format = PcmFormat {
+            sample_rate: 48_000,
+            ..Default::default()
+        };
+        let funspeech_format = funspeech_realtime_format(local_format);
+        let session = RealtimeSession {
+            session_id: "session-1".into(),
+            trace_id: "trace-1".into(),
+            voice_name: "desktop_voice".into(),
+            runtime_params: RuntimeParams::default(),
+            status: RealtimeSessionStatus::Running,
+            websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let asr_start = start_transcription_message("asr-task", funspeech_format);
+        assert_eq!(asr_start["header"]["namespace"], "SpeechTranscriber");
+        assert_eq!(asr_start["header"]["name"], "StartTranscription");
+        assert_eq!(asr_start["payload"]["format"], "pcm");
+        assert_eq!(asr_start["payload"]["sample_rate"], 16_000);
+
+        let tts_start = start_synthesis_message("tts-task", &session, funspeech_format);
+        assert_eq!(tts_start["header"]["namespace"], "FlowingSpeechSynthesizer");
+        assert_eq!(tts_start["header"]["name"], "StartSynthesis");
+        assert_eq!(tts_start["payload"]["voice"], "desktop_voice");
+        assert_eq!(tts_start["payload"]["format"], "PCM");
+        assert_eq!(tts_start["payload"]["sample_rate"], 16_000);
+
+        let run = run_synthesis_message("tts-task", "你好");
+        assert_eq!(run["header"]["name"], "RunSynthesis");
+        assert_eq!(run["payload"]["text"], "你好");
+    }
+
+    #[test]
+    fn realtime_resampler_converts_between_local_and_funspeech_rates() {
+        let source = vec![0.0, 0.5, 1.0, 0.5, 0.0, -0.5];
+
+        let downsampled = resample_samples_linear(&source, 48_000, 16_000);
+        assert_eq!(downsampled.len(), 2);
+
+        let upsampled = resample_samples_linear(&downsampled, 16_000, 48_000);
+        assert_eq!(upsampled.len(), 6);
+        assert!((upsampled[0] - source[0]).abs() < 0.001);
+    }
+
+    #[test]
+    fn aliyun_asr_and_tts_events_update_snapshot() {
+        let session = RealtimeSession {
+            session_id: "session-1".into(),
+            trace_id: "trace-1".into(),
+            voice_name: "desktop_voice".into(),
+            runtime_params: RuntimeParams::default(),
+            status: RealtimeSessionStatus::Running,
+            websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let mut snapshot = RealtimeStreamSnapshot::pending(&session);
+        let asr_final = json!({
+            "header": {"name": "SentenceEnd"},
+            "payload": {"text": "你好", "is_final": true}
+        });
+
+        assert!(is_final_asr_event(&asr_final));
+        assert_eq!(text_from_asr_event(&asr_final), Some("你好"));
+        apply_asr_event(&mut snapshot, &asr_final);
+        assert_eq!(snapshot.asr_text.as_deref(), Some("你好"));
+        assert_eq!(snapshot.last_event.as_deref(), Some("asr_SentenceEnd"));
+
+        apply_tts_event(&mut snapshot, &json!({"header": {"name": "SynthesisStarted"}}));
+        assert_eq!(snapshot.pipeline_stage, "tts_ready");
+        assert_eq!(snapshot.last_event.as_deref(), Some("tts_SynthesisStarted"));
+    }
+
+    #[test]
+    fn realtime_voice_events_accept_type_protocol_aliases() {
+        let session = RealtimeSession {
+            session_id: "session-1".into(),
+            trace_id: "trace-1".into(),
+            voice_name: "desktop_voice".into(),
+            runtime_params: RuntimeParams::default(),
+            status: RealtimeSessionStatus::Running,
+            websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let mut snapshot = RealtimeStreamSnapshot::pending(&session);
+
+        apply_json_event(
+            &mut snapshot,
+            &json!({"type": "ready", "session_id": "rt-1", "voiceName": "robot"}),
+        );
+        assert_eq!(snapshot.websocket_state, "running");
+        assert_eq!(snapshot.task_id.as_deref(), Some("rt-1"));
+        assert_eq!(snapshot.configured_voice_name, "robot");
+
+        apply_json_event(&mut snapshot, &json!({"type": "voice_updated", "voice_name": "girl"}));
+        assert_eq!(snapshot.configured_voice_name, "girl");
+        assert_eq!(snapshot.last_event.as_deref(), Some("voice_updated"));
+    }
 }

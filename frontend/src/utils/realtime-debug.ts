@@ -68,6 +68,9 @@ export function summarizeRealtimeSnapshot(snapshot: RealtimeStreamSnapshot): Rec
     latencyMs: snapshot.latencyMs,
     inputLevel: snapshot.inputLevel,
     virtualMicFrames: snapshot.virtualMicFrames,
+    pipelineStage: snapshot.pipelineStage,
+    asrText: snapshot.asrText,
+    ttsTextChunks: snapshot.ttsTextChunks,
     lastEvent: snapshot.lastEvent,
     lastError: snapshot.lastError,
   };

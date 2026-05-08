@@ -76,6 +76,21 @@ impl AssetCache {
         Ok(artifact)
     }
 
+    pub fn write_offline_artifact_bytes(
+        &self,
+        job_id: &str,
+        output_format: &str,
+        bytes: &[u8],
+    ) -> AppResult<OfflineArtifactPath> {
+        let artifact = self.offline_artifact_path(job_id, output_format)?;
+        if let Some(parent) = artifact.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| AppError::io("creating artifact directory", source))?;
+        }
+        std::fs::write(&artifact.path, bytes)
+            .map_err(|source| AppError::io("writing offline artifact bytes", source))?;
+        Ok(artifact)
+    }
+
     pub fn voice_design_artifact_path(
         &self,
         draft_id: &str,

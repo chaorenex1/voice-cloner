@@ -8,7 +8,10 @@ use crate::{
         error::{AppError, AppResult},
         trace::{new_entity_id, TraceId},
     },
-    clients::funspeech::offline::OfflineEndpoints,
+    clients::funspeech::{
+        offline::OfflineEndpoints,
+        tts::{synthesize_text, OfflineTtsRequest},
+    },
     domain::{
         offline_job::{OfflineJob, OfflineJobInputType, OfflineJobStatus},
         runtime_params::RuntimeParams,
@@ -124,8 +127,44 @@ impl OfflineJobManager {
         Ok(job)
     }
 
-    pub fn start_job(&self, job_id: &str) -> AppResult<OfflineJob> {
-        self.transition(job_id, OfflineJobStatus::Running, None)
+    pub fn start_job(&self, job_id: &str, settings: &AppSettings, cache: &AssetCache) -> AppResult<OfflineJob> {
+        let running = self.transition(job_id, OfflineJobStatus::Running, None)?;
+        if running.input_type != OfflineJobInputType::Text {
+            return Ok(running);
+        }
+
+        match synthesize_text(
+            &settings.backend.tts,
+            OfflineTtsRequest {
+                text: running.input_ref.clone(),
+                voice_name: running.voice_name.clone(),
+                runtime_params: running.runtime_params.clone(),
+                output_format: running.output_format.clone(),
+                sample_rate: settings.runtime.default_sample_rate,
+            },
+        ) {
+            Ok(result) => {
+                let artifact =
+                    cache.write_offline_artifact_bytes(&running.job_id, &running.output_format, &result.audio_bytes)?;
+                let mut jobs = self.jobs.write().expect("offline job manager lock poisoned");
+                let job = jobs
+                    .get_mut(job_id)
+                    .ok_or_else(|| AppError::offline_job(format!("offline job not found: {job_id}")))?;
+                job.local_artifact_path = Some(artifact.path.to_string_lossy().into_owned());
+                job.error_summary = None;
+                job.transition_to(OfflineJobStatus::Completed);
+                Ok(job.clone())
+            }
+            Err(error) => {
+                let mut jobs = self.jobs.write().expect("offline job manager lock poisoned");
+                let job = jobs
+                    .get_mut(job_id)
+                    .ok_or_else(|| AppError::offline_job(format!("offline job not found: {job_id}")))?;
+                job.error_summary = Some(error.to_string());
+                job.transition_to(OfflineJobStatus::Failed);
+                Ok(job.clone())
+            }
+        }
     }
 
     pub fn cancel_job(&self, job_id: &str) -> AppResult<OfflineJob> {
@@ -311,9 +350,9 @@ mod tests {
         let settings = AppSettings::default();
         let cache = cache();
         let created = manager
-            .create_text_job(
-                CreateOfflineTextJobRequest {
-                    text: "hello".into(),
+            .create_audio_job(
+                CreateOfflineAudioJobRequest {
+                    input_ref: "C:/recordings/input.wav".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
                     output_format: Some("mp3".into()),
@@ -323,7 +362,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            manager.start_job(&created.job_id).unwrap().status,
+            manager.start_job(&created.job_id, &settings, &cache).unwrap().status,
             OfflineJobStatus::Running
         );
         let failed = manager

@@ -69,6 +69,8 @@ const state = reactive<RealtimeState>({
   lastError: null,
 });
 
+let lastLoadedDefaultVoiceName: string | null | undefined;
+
 function runtimeParams(): RuntimeParams {
   return {
     values: {
@@ -81,6 +83,25 @@ function runtimeParams(): RuntimeParams {
 
 function isRunningStatus(status: string | null | undefined): boolean {
   return status === 'running' || status === 'connecting';
+}
+
+function hasVoice(voices: VoiceSummary[], voiceName: string | null | undefined): voiceName is string {
+  return Boolean(voiceName && voices.some((voice) => voice.voiceName === voiceName));
+}
+
+function resolveSelectedVoiceName(settings: AppSettings, voices: VoiceSummary[]): string | null {
+  const defaultVoiceName = settings.runtime.defaultVoiceName ?? null;
+  const defaultChanged = defaultVoiceName !== lastLoadedDefaultVoiceName;
+
+  if ((defaultChanged || !state.selectedVoiceName) && hasVoice(voices, defaultVoiceName)) {
+    return defaultVoiceName;
+  }
+
+  if (hasVoice(voices, state.selectedVoiceName)) {
+    return state.selectedVoiceName;
+  }
+
+  return voices.find((voice) => voice.isCurrent)?.voiceName ?? voices[0]?.voiceName ?? null;
 }
 
 export function useRealtimeStore() {
@@ -105,12 +126,8 @@ export function useRealtimeStore() {
       ]);
       state.settings = settings;
       state.voices = voices.length > 0 ? voices : demoVoices;
-      state.selectedVoiceName =
-        state.selectedVoiceName ??
-        settings.runtime.defaultVoiceName ??
-        state.voices.find((voice) => voice.isCurrent)?.voiceName ??
-        state.voices[0]?.voiceName ??
-        null;
+      state.selectedVoiceName = resolveSelectedVoiceName(settings, state.voices);
+      lastLoadedDefaultVoiceName = settings.runtime.defaultVoiceName ?? null;
       state.lastMessage = `已加载 ${state.voices.length} 个可用音色`;
       logRealtimeDebug('store:load:success', {
         voiceCount: state.voices.length,

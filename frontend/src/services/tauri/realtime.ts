@@ -111,6 +111,9 @@ function mockSnapshot(session: RealtimeSession): RealtimeStreamSnapshot {
     latencyMs: session.status === 'running' ? 24 : null,
     inputLevel: { rms: 0, peak: 0 },
     virtualMicFrames: session.status === 'running' ? 42 : 0,
+    pipelineStage: session.status === 'running' ? 'preview_audio_received' : 'preview',
+    asrText: null,
+    ttsTextChunks: 0,
     lastEvent: session.status === 'running' ? 'configured' : null,
     lastError: null,
   };

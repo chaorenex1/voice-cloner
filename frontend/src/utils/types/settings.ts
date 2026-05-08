@@ -2,6 +2,8 @@ export type SettingsSection = 'devices' | 'backends';
 
 export type AudioDeviceKind = 'input' | 'output';
 
+export type RealtimeVoiceMode = 'realtimeVoice' | 'asrTts';
+
 export type BackendHealthStatus = 'idle' | 'checking' | 'ok' | 'warning' | 'error';
 
 export interface AudioDevice {
@@ -45,6 +47,7 @@ export interface RuntimeSettings {
   defaultOutputFormat: string;
   defaultSampleRate: number;
   audioFrameMs: number;
+  realtimeVoiceMode: RealtimeVoiceMode;
 }
 
 export interface AppSettings {

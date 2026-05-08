@@ -6,6 +6,7 @@ import type {
   BackendEndpointConfig,
   BackendSettings,
   DeviceSettings,
+  RuntimeSettings,
   SettingsSection,
 } from '../utils/types/settings';
 
@@ -101,6 +102,18 @@ export function useSettingsStore() {
     dirtyRevision += 1;
   }
 
+  function updateRuntimeSettings(patch: Partial<RuntimeSettings>): void {
+    if (!state.settings) {
+      return;
+    }
+
+    state.settings = {
+      ...state.settings,
+      runtime: { ...state.settings.runtime, ...patch },
+    };
+    dirtyRevision += 1;
+  }
+
   async function saveSettings(): Promise<AppSettings | null> {
     if (!state.settings) {
       return null;
@@ -131,6 +144,7 @@ export function useSettingsStore() {
     updateDeviceSettings,
     updateBackendSettings,
     updateFunSpeechSettings,
+    updateRuntimeSettings,
     saveSettings,
   };
 }

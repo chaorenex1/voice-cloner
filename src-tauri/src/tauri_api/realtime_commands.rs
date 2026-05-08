@@ -9,8 +9,9 @@ use crate::{
         frame::{PcmFormat, SampleFormat},
         virtual_mic::VirtualMicAdapter,
     },
-    domain::session::RealtimeSession,
-    services::realtime_stream_manager::RealtimeStreamSnapshot,
+    clients::funspeech::{asr::RealtimeAsrEndpoint, tts::RealtimeTtsEndpoint},
+    domain::{session::RealtimeSession, settings::RealtimeVoiceMode},
+    services::realtime_stream_manager::{RealtimeStreamMode, RealtimeStreamSnapshot},
     services::session_manager::{
         CreateRealtimeSessionRequest, SwitchRealtimeVoiceRequest, UpdateRealtimeParamsRequest,
     },
@@ -54,6 +55,7 @@ pub async fn start_realtime_session(state: State<'_, AppState>, session_id: Stri
         virtual_mic_enabled = settings.device.virtual_mic_enabled,
         input_device_id = ?settings.device.input_device_id,
         virtual_mic_device_id = ?settings.device.virtual_mic_device_id,
+        realtime_voice_mode = ?settings.runtime.realtime_voice_mode,
         "realtime audio settings resolved"
     );
     if settings.device.virtual_mic_enabled {
@@ -95,6 +97,17 @@ pub async fn start_realtime_session(state: State<'_, AppState>, session_id: Stri
             Some(input_device),
             state.virtual_mic_handle(),
             settings.device.virtual_mic_enabled,
+            match settings.runtime.realtime_voice_mode {
+                RealtimeVoiceMode::RealtimeVoice => RealtimeStreamMode::RealtimeVoice,
+                RealtimeVoiceMode::AsrTts => {
+                    let asr = RealtimeAsrEndpoint::from_backend_config(&settings.backend.asr);
+                    let tts = RealtimeTtsEndpoint::from_backend_config(&settings.backend.tts);
+                    RealtimeStreamMode::AsrTts {
+                        asr_url: asr.websocket_url,
+                        tts_url: tts.websocket_url,
+                    }
+                }
+            },
         )
         .await
     {

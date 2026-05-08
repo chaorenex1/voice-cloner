@@ -14,6 +14,76 @@ const meterStyle = computed(() => {
   return { width: `${Math.min(100, Math.max(4, peak * 100))}%` };
 });
 
+const streamState = computed(
+  () => realtime.state.snapshot?.websocketState ?? realtime.state.session?.status ?? 'idle'
+);
+
+const statusLabel = computed(() => {
+  if (realtime.state.lastError) {
+    return '链路异常';
+  }
+  if (streamState.value === 'running') {
+    return 'FunSpeech 已连接';
+  }
+  if (streamState.value === 'connecting') {
+    return '连接中';
+  }
+  return '待机';
+});
+
+const latencyLabel = computed(() => {
+  const latency = realtime.state.snapshot?.latencyMs;
+  return latency === null || latency === undefined ? '延迟 --' : `延迟 ${latency}ms`;
+});
+
+const frameProofLabel = computed(() => {
+  const snapshot = realtime.state.snapshot;
+  if (!snapshot) {
+    return '音频帧 --';
+  }
+  return `发 ${snapshot.sentFrames} / 收 ${snapshot.receivedFrames}`;
+});
+
+const outputProofLabel = computed(() => {
+  const snapshot = realtime.state.snapshot;
+  if (!realtime.state.settings?.device.virtualMicEnabled) {
+    return '虚拟麦未启用';
+  }
+  if (!snapshot) {
+    return '虚拟麦 --';
+  }
+  return snapshot.virtualMicFrames > 0
+    ? `虚拟麦写入 ${snapshot.virtualMicFrames}`
+    : '虚拟麦等待写入';
+});
+
+const pipelineLabel = computed(() => {
+  const mode = realtime.state.settings?.runtime.realtimeVoiceMode;
+  const prefix = mode === 'asrTts' ? 'B ASR→TTS' : 'A Realtime Voice';
+  const stage = realtime.state.snapshot?.pipelineStage;
+  return stage ? `${prefix} / ${stage}` : prefix;
+});
+
+const realtimeProofHint = computed(() => {
+  const snapshot = realtime.state.snapshot;
+  if (!snapshot || streamState.value !== 'running') {
+    return '等待实时链路建立。';
+  }
+  if (snapshot.receivedFrames > 0) {
+    if (realtime.state.settings?.device.virtualMicEnabled && snapshot.virtualMicFrames === 0) {
+      return '已收到 FunSpeech 回包，但还没有写入虚拟麦克风。';
+    }
+    return `已收到 FunSpeech 回包 ${snapshot.receivedFrames} 帧，可判定实时音频回路已通。`;
+  }
+  if (snapshot.sentFrames > 0) {
+    if (realtime.state.settings?.runtime.realtimeVoiceMode === 'asrTts' && snapshot.asrText) {
+      return `ASR 已识别：${snapshot.asrText}；正在等待 TTS 音频回包。`;
+    }
+    return `已发送麦克风音频 ${snapshot.sentFrames} 帧，正在等待 FunSpeech 回包。`;
+  }
+  return 'FunSpeech 已配置完成，正在等待本机麦克风输入。';
+});
+
 const callHeadline = computed(() => {
   if (realtime.state.lastError) {
     return '声音通话中断';
@@ -32,7 +102,7 @@ const callHint = computed(() => {
     return realtime.state.lastError;
   }
   if (realtime.isRunning.value) {
-    return '你说的话会以 PCM 透传到 FunSpeech，并回到监听 / 虚拟麦克风链路。';
+    return realtimeProofHint.value;
   }
   return '选择一个声音身份，点击底部按钮开始通话式实时变声。';
 });
@@ -60,13 +130,16 @@ onBeforeUnmount(() => {
       <div>
         <p class="module-eyebrow">Voice Call</p>
       </div>
-      <!-- <div class="call-quality" aria-label="通话质量">
-        <span :data-state="realtime.state.snapshot?.websocketState ?? realtime.state.session?.status ?? 'idle'">
+      <div class="call-quality" aria-label="通话质量">
+        <span :data-state="streamState">
           {{ statusLabel }}
         </span>
         <span>{{ latencyLabel }}</span>
-        <span>{{ realtime.state.snapshot?.audioMode ?? 'passthrough' }}</span>
-      </div> -->
+        <span>{{ frameProofLabel }}</span>
+        <span>{{ outputProofLabel }}</span>
+        <span>{{ pipelineLabel }}</span>
+        <span>{{ realtime.state.snapshot?.audioMode ?? 'audio-mode --' }}</span>
+      </div>
     </header>
 
     <div class="call-layout">
@@ -98,7 +171,7 @@ onBeforeUnmount(() => {
             {{ realtime.state.lastError ?? realtime.state.lastMessage }}
           </div>
           <div v-if="realtime.isRunning.value" class="call-bubble call-bubble--voice">
-            FunSpeech 已连接，PCM 正在透传回路中。
+            {{ realtimeProofHint }}
           </div>
         </div>
 

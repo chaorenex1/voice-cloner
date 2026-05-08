@@ -54,6 +54,7 @@ const mockSettings: AppSettings = {
     defaultOutputFormat: 'wav',
     defaultSampleRate: 48000,
     audioFrameMs: 20,
+    realtimeVoiceMode: 'realtimeVoice',
   },
 };
 

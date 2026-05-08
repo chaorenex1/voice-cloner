@@ -44,6 +44,9 @@ export interface RealtimeStreamSnapshot {
     peak: number;
   };
   virtualMicFrames: number;
+  pipelineStage: string;
+  asrText: string | null;
+  ttsTextChunks: number;
   lastEvent: string | null;
   lastError: string | null;
 }

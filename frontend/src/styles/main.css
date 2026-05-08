@@ -369,6 +369,13 @@ button {
   font-weight: 700;
 }
 
+.form-field small {
+  color: #748197;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
 .search-field input,
 .form-field input,
 .form-field select,
@@ -1432,6 +1439,12 @@ button {
 .call-quality span[data-state='running'] {
   background: #e6fb84;
   color: #13202b;
+}
+
+.call-quality span[data-state='connecting'],
+.call-quality span[data-state='connected'] {
+  background: #fff1bb;
+  color: #5f4700;
 }
 
 .call-quality span[data-state='error'],

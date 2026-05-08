@@ -96,11 +96,26 @@ impl Default for BackendSettings {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum RealtimeVoiceMode {
+    RealtimeVoice,
+    AsrTts,
+}
+
+impl Default for RealtimeVoiceMode {
+    fn default() -> Self {
+        Self::RealtimeVoice
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeSettings {
     pub default_voice_name: Option<String>,
     pub default_output_format: String,
     pub default_sample_rate: u32,
     pub audio_frame_ms: u16,
+    #[serde(default)]
+    pub realtime_voice_mode: RealtimeVoiceMode,
 }
 
 impl Default for RuntimeSettings {
@@ -110,6 +125,7 @@ impl Default for RuntimeSettings {
             default_output_format: "wav".into(),
             default_sample_rate: 48_000,
             audio_frame_ms: 20,
+            realtime_voice_mode: RealtimeVoiceMode::RealtimeVoice,
         }
     }
 }
@@ -174,6 +190,7 @@ pub struct RuntimeSettingsPatch {
     pub default_output_format: Option<String>,
     pub default_sample_rate: Option<u32>,
     pub audio_frame_ms: Option<u16>,
+    pub realtime_voice_mode: Option<RealtimeVoiceMode>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -232,6 +249,9 @@ impl AppSettingsPatch {
             if let Some(audio_frame_ms) = runtime.audio_frame_ms {
                 settings.runtime.audio_frame_ms = audio_frame_ms;
             }
+            if let Some(realtime_voice_mode) = runtime.realtime_voice_mode {
+                settings.runtime.realtime_voice_mode = realtime_voice_mode;
+            }
         }
 
         settings
@@ -248,6 +268,10 @@ mod tests {
 
         assert_eq!(settings.runtime.default_output_format, "wav");
         assert_eq!(settings.runtime.audio_frame_ms, 20);
+        assert_eq!(
+            settings.runtime.realtime_voice_mode,
+            super::RealtimeVoiceMode::RealtimeVoice
+        );
         assert!(settings.validate().is_ok());
     }
 

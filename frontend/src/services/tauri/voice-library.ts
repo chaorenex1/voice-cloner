@@ -278,6 +278,7 @@ export async function setCurrentVoiceName(voiceName: string): Promise<void> {
       defaultVoiceName: voiceName,
     },
   });
+  invalidateCustomVoiceCache();
 }
 
 export interface VoicePreviewState {
