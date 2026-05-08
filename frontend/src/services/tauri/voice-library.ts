@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type {
   SyncVoicesRequest,
   VoiceDetail,
@@ -9,12 +10,13 @@ import type {
 } from '../../utils/types/voice';
 import { getSettings, updateSettings } from './settings';
 
-interface CustomVoiceProfile {
+interface CustomVoiceProfileView {
   voiceName: string;
   sourcePromptText?: string | null;
   voiceInstruction: string;
-  referenceAudioPath: string;
   referenceText: string;
+  hasReferenceAudio: boolean;
+  referenceAudioFileName?: string | null;
   syncStatus: 'localOnly' | 'pendingSync' | 'synced' | 'failed' | 'conflict';
   lastSyncedAt: string | null;
   createdAt: string;
@@ -33,6 +35,16 @@ export interface WavUploadPayload {
   bytes: number[];
 }
 
+export interface ReferenceAudioTranscription {
+  fileName: string;
+  text: string;
+}
+
+export interface VoicePreviewFinishedEvent {
+  voiceName: string;
+  playingVoiceName: string | null;
+}
+
 export interface CreateCustomVoiceRequest {
   displayName: string;
   referenceText: string;
@@ -40,16 +52,16 @@ export interface CreateCustomVoiceRequest {
   upload: WavUploadPayload;
 }
 
-let customVoiceProfilesCache: CustomVoiceProfile[] | null = null;
-let customVoiceProfilesPromise: Promise<CustomVoiceProfile[]> | null = null;
+let voiceListCache: VoiceSummary[] | null = null;
+let voiceListPromise: Promise<VoiceSummary[]> | null = null;
 
-function cloneCustomProfiles(profiles: CustomVoiceProfile[]): CustomVoiceProfile[] {
-  return structuredClone(profiles);
+function cloneVoiceSummaries(voices: VoiceSummary[]): VoiceSummary[] {
+  return structuredClone(voices);
 }
 
 function invalidateCustomVoiceCache(): void {
-  customVoiceProfilesCache = null;
-  customVoiceProfilesPromise = null;
+  voiceListCache = null;
+  voiceListPromise = null;
 }
 
 function voiceNameFromDisplayName(displayName: string): string {
@@ -62,7 +74,7 @@ function voiceNameFromDisplayName(displayName: string): string {
   );
 }
 
-function syncStatusFromProfile(status: CustomVoiceProfile['syncStatus']): VoiceSyncStatus {
+function syncStatusFromProfile(status: CustomVoiceProfileView['syncStatus']): VoiceSyncStatus {
   switch (status) {
     case 'synced':
       return 'synced';
@@ -90,43 +102,34 @@ function syncStatusFromReport(status: VoiceSyncReport['syncStatus']): VoiceSyncS
   }
 }
 
-function detailToSummary(detail: VoiceDetail): VoiceSummary {
-  return {
-    voiceName: detail.voiceName,
-    displayName: detail.displayName,
-    source: detail.source,
-    tags: detail.tags,
-    hasReferenceAudio: detail.hasReferenceAudio,
-    updatedAt: detail.updatedAt,
-    referenceTextPreview: detail.referenceTextPreview,
-    syncStatus: detail.syncStatus,
-    isCurrent: detail.isCurrent,
-  };
-}
-
-function detailFromProfile(
-  profile: CustomVoiceProfile,
+function summaryFromProfile(
+  profile: CustomVoiceProfileView,
   currentVoiceName: string | null
-): VoiceDetail {
-  const referenceTextPreview = profile.referenceText.slice(0, 42);
+): VoiceSummary {
   const isRemoteImport = profile.sourcePromptText === 'funspeechRemote';
   return {
     voiceName: profile.voiceName,
     displayName: profile.voiceName,
     source: isRemoteImport ? 'remote' : 'custom',
     tags: [isRemoteImport ? '云端' : '自定义', profile.syncStatus === 'synced' ? '已同步' : '本地'],
-    hasReferenceAudio: Boolean(profile.referenceAudioPath),
+    hasReferenceAudio: profile.hasReferenceAudio,
     updatedAt: profile.lastSyncedAt ?? profile.createdAt,
-    referenceTextPreview,
+    referenceTextPreview: profile.referenceText.slice(0, 42),
     syncStatus: syncStatusFromProfile(profile.syncStatus),
     isCurrent: currentVoiceName === profile.voiceName,
+  };
+}
+
+function detailFromProfile(
+  profile: CustomVoiceProfileView,
+  currentVoiceName: string | null
+): VoiceDetail {
+  return {
+    ...summaryFromProfile(profile, currentVoiceName),
     voiceInstruction: profile.voiceInstruction,
     referenceText: profile.referenceText,
-    referenceAudioPath: profile.referenceAudioPath,
-    referenceAudioFileName: profile.referenceAudioPath
-      ? (profile.referenceAudioPath.split(/[\\/]/).pop() ?? `${profile.voiceName}.wav`)
-      : undefined,
-    editable: !isRemoteImport,
+    referenceAudioFileName: profile.referenceAudioFileName ?? undefined,
+    editable: profile.sourcePromptText !== 'funspeechRemote',
   };
 }
 
@@ -138,32 +141,35 @@ async function currentVoiceName(): Promise<string | null> {
   }
 }
 
-async function listCustomProfiles(): Promise<CustomVoiceProfile[]> {
-  if (customVoiceProfilesCache) {
-    return cloneCustomProfiles(customVoiceProfilesCache);
+async function listCachedVoiceSummaries(): Promise<VoiceSummary[]> {
+  if (voiceListCache) {
+    return cloneVoiceSummaries(voiceListCache);
   }
 
-  customVoiceProfilesPromise ??= invoke<CustomVoiceProfile[]>('list_custom_voices')
-    .then((profiles) => {
-      customVoiceProfilesCache = cloneCustomProfiles(profiles);
-      return cloneCustomProfiles(profiles);
+  voiceListPromise ??= Promise.all([
+    invoke<CustomVoiceProfileView[]>('list_custom_voices'),
+    currentVoiceName(),
+  ])
+    .then(([profiles, current]) => {
+      const summaries = profiles.map((profile) => summaryFromProfile(profile, current));
+      voiceListCache = cloneVoiceSummaries(summaries);
+      return cloneVoiceSummaries(summaries);
     })
     .finally(() => {
-      customVoiceProfilesPromise = null;
+      voiceListPromise = null;
     });
 
-  return cloneCustomProfiles(await customVoiceProfilesPromise);
+  return cloneVoiceSummaries(await voiceListPromise);
 }
 
 export async function listVoices(): Promise<VoiceSummary[]> {
-  const [localProfiles, current] = await Promise.all([listCustomProfiles(), currentVoiceName()]);
-  return localProfiles.map((profile) => detailToSummary(detailFromProfile(profile, current)));
+  return listCachedVoiceSummaries();
 }
 
 export async function getVoiceDetail(voiceName: string): Promise<VoiceDetail> {
   const current = await currentVoiceName();
   try {
-    const profile = await invoke<CustomVoiceProfile>('get_custom_voice', { voiceName });
+    const profile = await invoke<CustomVoiceProfileView>('get_custom_voice', { voiceName });
     return detailFromProfile(profile, current);
   } catch (_error) {
     throw new Error(`音色不存在：${voiceName}`);
@@ -173,13 +179,12 @@ export async function getVoiceDetail(voiceName: string): Promise<VoiceDetail> {
 async function saveProfile(
   detail: VoiceDetail,
   upload: WavUploadPayload | null
-): Promise<CustomVoiceProfile> {
-  return invoke<CustomVoiceProfile>('save_custom_voice_profile', {
+): Promise<CustomVoiceProfileView> {
+  return invoke<CustomVoiceProfileView>('save_custom_voice_profile', {
     request: {
       voiceName: detail.voiceName,
       voiceInstruction: detail.voiceInstruction ?? '',
       referenceText: detail.referenceText,
-      referenceAudioPath: upload ? null : (detail.referenceAudioPath ?? null),
       referenceAudioFileName: upload?.fileName ?? null,
       referenceAudioBytes: upload?.bytes ?? null,
     },
@@ -280,17 +285,35 @@ export interface VoicePreviewState {
 }
 
 export async function toggleVoicePreview(detail: VoiceDetail): Promise<VoicePreviewState> {
-  if (!detail.referenceAudioPath || detail.source === 'remote') {
+  if (!detail.hasReferenceAudio || detail.source === 'remote') {
     throw new Error('当前音色没有可试听的本地 wav 文件');
   }
   return invoke<VoicePreviewState>('toggle_voice_preview', {
     request: {
       voiceName: detail.voiceName,
-      referenceAudioPath: detail.referenceAudioPath,
     },
   });
 }
 
 export async function stopVoicePreview(): Promise<VoicePreviewState> {
   return invoke<VoicePreviewState>('stop_voice_preview');
+}
+
+export async function transcribeReferenceAudio(
+  upload: WavUploadPayload
+): Promise<ReferenceAudioTranscription> {
+  return invoke<ReferenceAudioTranscription>('transcribe_reference_audio', {
+    request: {
+      fileName: upload.fileName,
+      audioBytes: upload.bytes,
+    },
+  });
+}
+
+export function listenVoicePreviewFinished(
+  handler: (event: VoicePreviewFinishedEvent) => void
+): Promise<() => void> {
+  return listen<VoicePreviewFinishedEvent>('voice-preview-finished', (event) => {
+    handler(event.payload);
+  });
 }

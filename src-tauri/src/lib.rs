@@ -73,6 +73,7 @@ pub fn run() {
             tauri_api::voice_design_commands::list_custom_voices,
             tauri_api::voice_design_commands::get_custom_voice,
             tauri_api::voice_design_commands::save_custom_voice_profile,
+            tauri_api::voice_design_commands::transcribe_reference_audio,
             tauri_api::voice_sync_commands::sync_voices_full,
             tauri_api::voice_sync_commands::list_remote_voices,
             tauri_api::voice_sync_commands::register_custom_voice,

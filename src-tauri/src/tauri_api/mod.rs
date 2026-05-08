@@ -25,7 +25,7 @@ pub use voice_design_commands::{
     complete_voice_design_asr, complete_voice_design_preview, complete_voice_instruction, create_voice_design_draft,
     fail_voice_design_draft, get_custom_voice, get_voice_design_draft, list_custom_voices, list_voice_design_drafts,
     save_custom_voice_profile, save_voice_design_draft, start_voice_design_asr, start_voice_design_generation,
-    start_voice_design_llm,
+    start_voice_design_llm, transcribe_reference_audio,
 };
 pub use voice_sync_commands::{
     delete_custom_voice_sync, fail_voice_sync, list_remote_voices, list_voice_sync_reports, refresh_voice_runtime,

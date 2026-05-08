@@ -333,6 +333,21 @@ button {
   transform: none;
 }
 
+.button--busy {
+  position: relative;
+  gap: 8px;
+}
+
+.button--busy::before {
+  width: 0.82em;
+  height: 0.82em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: voice-spin 720ms linear infinite;
+  content: '';
+}
+
 .search-field,
 .form-field {
   display: grid;
@@ -401,6 +416,7 @@ button {
 }
 
 .voice-library-page {
+  position: relative;
   height: 100vh;
   min-height: 0;
   overflow: hidden;
@@ -426,6 +442,66 @@ button {
 .voice-toolbar .module-description {
   max-width: 520px;
   margin-top: 10px;
+}
+
+.voice-operation-toast {
+  position: absolute;
+  z-index: 5;
+  top: clamp(86px, 11vw, 112px);
+  right: clamp(18px, 2.2vw, 28px);
+  display: inline-flex;
+  align-items: center;
+  max-width: min(420px, calc(100vw - 36px));
+  gap: 12px;
+  border: 1px solid rgba(21, 35, 52, 0.12);
+  border-radius: 22px;
+  padding: 12px 16px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(238, 244, 239, 0.82)),
+    radial-gradient(circle at 20% 20%, rgba(230, 251, 132, 0.42), transparent 38%);
+  box-shadow: 0 18px 42px rgba(24, 35, 51, 0.14);
+  backdrop-filter: blur(18px);
+}
+
+.voice-operation-toast strong,
+.voice-operation-toast small {
+  display: block;
+}
+
+.voice-operation-toast strong {
+  color: #152334;
+  font-size: 0.88rem;
+}
+
+.voice-operation-toast small {
+  overflow: hidden;
+  max-width: 340px;
+  color: #667386;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid rgba(20, 35, 51, 0.18);
+  border-top-color: #142333;
+  border-radius: 999px;
+  animation: voice-spin 720ms linear infinite;
+}
+
+.voice-operation-enter-active,
+.voice-operation-leave-active {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.voice-operation-enter-from,
+.voice-operation-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.98);
 }
 
 .voice-library-layout,
@@ -640,6 +716,7 @@ button {
   width: 12px;
   border-radius: 999px;
   background: #e6fb84;
+  animation: wave-listening 1000ms ease-in-out infinite alternate;
 }
 
 .wave-orb span:nth-child(1) {
@@ -648,18 +725,22 @@ button {
 
 .wave-orb span:nth-child(2) {
   height: 70px;
+  animation-delay: 120ms;
 }
 
 .wave-orb span:nth-child(3) {
   height: 100px;
+  animation-delay: 220ms;
 }
 
 .wave-orb span:nth-child(4) {
   height: 58px;
+  animation-delay: 320ms;
 }
 
 .wave-orb span:nth-child(5) {
   height: 82px;
+  animation-delay: 420ms;
 }
 
 .detail-header,
@@ -1768,6 +1849,22 @@ button {
 @keyframes call-ring {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes voice-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes wave-listening {
+  from {
+    transform: scaleY(0.72);
+  }
+
+  to {
+    transform: scaleY(1);
   }
 }
 

@@ -3,12 +3,14 @@ import {
   createCustomVoice,
   deleteVoice,
   getVoiceDetail,
+  listenVoicePreviewFinished,
   listVoices,
   saveVoiceDetail,
   setCurrentVoiceName,
   stopVoicePreview,
   syncVoices,
   toggleVoicePreview,
+  transcribeReferenceAudio,
   type CreateCustomVoiceRequest,
   type WavUploadPayload,
 } from '../services/tauri/voice-library';
@@ -20,6 +22,18 @@ import type {
   VoiceSyncResult,
 } from '../utils/types/voice';
 
+export type VoiceLibraryOperation =
+  | 'loadingVoices'
+  | 'syncingCloud'
+  | 'refreshingCloud'
+  | 'uploadingAudio'
+  | 'recognizingAudio'
+  | 'savingVoice'
+  | 'creatingVoice'
+  | 'deletingVoice'
+  | 'settingCurrent'
+  | null;
+
 export interface VoiceLibraryState {
   voices: VoiceSummary[];
   selectedVoiceName: string | null;
@@ -28,6 +42,7 @@ export interface VoiceLibraryState {
   search: string;
   loading: boolean;
   saving: boolean;
+  operation: VoiceLibraryOperation;
   playingVoiceName: string | null;
   lastMessage: string;
 }
@@ -47,9 +62,12 @@ const state = reactive<VoiceLibraryState>({
   search: '',
   loading: false,
   saving: false,
+  operation: null,
   playingVoiceName: null,
   lastMessage: '音色库等待加载',
 });
+
+let previewFinishListenerStarted = false;
 
 function voiceMatchesSearch(voice: VoiceSummary, search: string): boolean {
   const normalizedSearch = search.trim().toLowerCase();
@@ -72,7 +90,30 @@ function patchVoiceSummary(result: VoiceMutationResult): void {
   );
 }
 
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function startPreviewFinishListener(): void {
+  if (previewFinishListenerStarted) {
+    return;
+  }
+
+  previewFinishListenerStarted = true;
+  void listenVoicePreviewFinished((event) => {
+    if (state.playingVoiceName === event.voiceName) {
+      state.playingVoiceName = event.playingVoiceName;
+      state.lastMessage = `${event.voiceName} 试听已结束`;
+    }
+  }).catch((error) => {
+    previewFinishListenerStarted = false;
+    state.lastMessage = `试听结束事件监听失败：${messageFromError(error)}`;
+  });
+}
+
 export function useVoiceLibraryStore() {
+  startPreviewFinishListener();
+
   const filteredVoices = computed(() =>
     state.voices.filter((voice) => voiceMatchesSearch(voice, state.search))
   );
@@ -89,8 +130,12 @@ export function useVoiceLibraryStore() {
       : `已加载 ${state.voices.length} 个音色`;
   }
 
-  async function loadVoices(): Promise<void> {
-    state.loading = true;
+  async function loadVoices(options: { preserveOperation?: boolean } = {}): Promise<void> {
+    const shouldOwnOperation = !options.preserveOperation;
+    if (shouldOwnOperation) {
+      state.loading = true;
+      state.operation = 'loadingVoices';
+    }
     try {
       const previousSelection = state.selectedVoiceName;
       state.voices = await listVoices();
@@ -106,7 +151,10 @@ export function useVoiceLibraryStore() {
       state.pendingReferenceAudio = null;
       state.lastMessage = `已加载 ${state.voices.length} 个音色`;
     } finally {
-      state.loading = false;
+      if (shouldOwnOperation) {
+        state.loading = false;
+        state.operation = null;
+      }
     }
   }
 
@@ -134,9 +182,22 @@ export function useVoiceLibraryStore() {
     updateDetail({
       hasReferenceAudio: true,
       referenceAudioFileName: upload.fileName,
-      referenceAudioPath: upload.fileName,
     });
     state.lastMessage = `已选择 wav 参考音频：${upload.fileName}`;
+  }
+
+  async function recognizeReferenceAudio(upload: WavUploadPayload): Promise<string | null> {
+    state.operation = 'recognizingAudio';
+    try {
+      const result = await transcribeReferenceAudio(upload);
+      state.lastMessage = `已自动识别参考文本：${result.text.slice(0, 42)}`;
+      return result.text;
+    } catch (error) {
+      state.lastMessage = `自动识别参考文本失败：${messageFromError(error)}`;
+      return null;
+    } finally {
+      state.operation = null;
+    }
   }
 
   async function saveSelectedVoice(): Promise<VoiceMutationResult | null> {
@@ -145,30 +206,34 @@ export function useVoiceLibraryStore() {
     }
 
     state.saving = true;
+    state.operation = 'savingVoice';
     try {
       const result = await saveVoiceDetail(state.detail, state.pendingReferenceAudio);
       state.lastMessage = result.message;
       updateDetail({ updatedAt: result.updatedAt, syncStatus: result.syncStatus });
       patchVoiceSummary(result);
       state.pendingReferenceAudio = null;
-      await loadVoices();
+      await loadVoices({ preserveOperation: true });
       return result;
     } finally {
       state.saving = false;
+      state.operation = null;
     }
   }
 
   async function createLocalVoice(draft: CreateVoiceDraft): Promise<VoiceMutationResult> {
     state.saving = true;
+    state.operation = 'creatingVoice';
     try {
       const result = await createCustomVoice(draft as CreateCustomVoiceRequest);
       state.lastMessage = result.message;
-      await loadVoices();
+      await loadVoices({ preserveOperation: true });
       state.selectedVoiceName = result.voiceName;
       state.detail = await getVoiceDetail(result.voiceName);
       return result;
     } finally {
       state.saving = false;
+      state.operation = null;
     }
   }
 
@@ -182,6 +247,7 @@ export function useVoiceLibraryStore() {
       state.playingVoiceName = stopped.playingVoiceName;
     }
     state.saving = true;
+    state.operation = 'deletingVoice';
     try {
       const result = await deleteVoice(target);
       state.lastMessage = result.message;
@@ -191,21 +257,27 @@ export function useVoiceLibraryStore() {
       return result;
     } finally {
       state.saving = false;
+      state.operation = null;
     }
   }
 
   async function setCurrentVoice(voiceName: string): Promise<void> {
-    await setCurrentVoiceName(voiceName);
-    state.voices = state.voices.map((voice) => ({
-      ...voice,
-      isCurrent: voice.voiceName === voiceName,
-    }));
+    state.operation = 'settingCurrent';
+    try {
+      await setCurrentVoiceName(voiceName);
+      state.voices = state.voices.map((voice) => ({
+        ...voice,
+        isCurrent: voice.voiceName === voiceName,
+      }));
 
-    if (state.detail) {
-      updateDetail({ isCurrent: state.detail.voiceName === voiceName });
+      if (state.detail) {
+        updateDetail({ isCurrent: state.detail.voiceName === voiceName });
+      }
+
+      state.lastMessage = '当前音色已保存到本地设置';
+    } finally {
+      state.operation = null;
     }
-
-    state.lastMessage = '当前音色已保存到本地设置';
   }
 
   async function previewVoice(voiceName?: string): Promise<void> {
@@ -221,13 +293,20 @@ export function useVoiceLibraryStore() {
   }
 
   async function runSync(mode: VoiceSyncMode): Promise<VoiceSyncResult> {
-    const result = await syncVoices({
-      mode,
-      voiceNames: state.selectedVoiceName ? [state.selectedVoiceName] : undefined,
-    });
-    state.lastMessage = result.message;
-    await loadVoices();
-    return result;
+    state.loading = true;
+    state.operation = mode === 'full' ? 'syncingCloud' : 'refreshingCloud';
+    try {
+      const result = await syncVoices({
+        mode,
+        voiceNames: state.selectedVoiceName ? [state.selectedVoiceName] : undefined,
+      });
+      state.lastMessage = result.message;
+      await loadVoices({ preserveOperation: true });
+      return result;
+    } finally {
+      state.loading = false;
+      state.operation = null;
+    }
   }
 
   return {
@@ -239,6 +318,7 @@ export function useVoiceLibraryStore() {
     selectVoice,
     updateDetail,
     attachReferenceAudio,
+    recognizeReferenceAudio,
     saveSelectedVoice,
     setCurrentVoice,
     createLocalVoice,

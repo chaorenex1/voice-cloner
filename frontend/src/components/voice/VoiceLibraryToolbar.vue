@@ -2,6 +2,7 @@
 defineProps<{
   search: string;
   loading: boolean;
+  operation: string | null;
   resultCount: number;
   totalCount: number;
 }>();
@@ -40,11 +41,23 @@ defineEmits<{
         清空搜索
       </button>
       <button class="ghost-button" type="button" @click="$emit('create')">新增音色</button>
-      <button class="primary-button" type="button" :disabled="loading" @click="$emit('sync')">
-        从云端同步
+      <button
+        class="primary-button"
+        type="button"
+        :class="{ 'button--busy': operation === 'syncingCloud' }"
+        :disabled="loading"
+        @click="$emit('sync')"
+      >
+        {{ operation === 'syncingCloud' ? '同步中' : '从云端同步' }}
       </button>
-      <button class="icon-button" type="button" :disabled="loading" @click="$emit('refresh')">
-        刷新
+      <button
+        class="icon-button"
+        type="button"
+        :class="{ 'button--busy': operation === 'refreshingCloud' }"
+        :disabled="loading"
+        @click="$emit('refresh')"
+      >
+        {{ operation === 'refreshingCloud' ? '刷新中' : '刷新' }}
       </button>
     </div>
   </header>

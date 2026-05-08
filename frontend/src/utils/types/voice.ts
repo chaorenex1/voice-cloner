@@ -19,7 +19,6 @@ export interface VoiceSummary {
 export interface VoiceDetail extends VoiceSummary {
   voiceInstruction?: string;
   referenceText: string;
-  referenceAudioPath?: string;
   referenceAudioFileName?: string;
   previewAudioPath?: string;
   editable: boolean;

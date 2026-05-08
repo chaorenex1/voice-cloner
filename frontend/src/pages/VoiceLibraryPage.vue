@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import VoiceDetailPanel from '../components/voice/VoiceDetailPanel.vue';
 import VoiceLibraryRail from '../components/voice/VoiceLibraryRail.vue';
 import VoiceLibraryToolbar from '../components/voice/VoiceLibraryToolbar.vue';
@@ -14,6 +14,7 @@ const {
   selectVoice,
   updateDetail,
   attachReferenceAudio,
+  recognizeReferenceAudio,
   saveSelectedVoice,
   setCurrentVoice,
   createLocalVoice,
@@ -26,13 +27,36 @@ const isCreating = ref(false);
 const draft = reactive<{
   displayName: string;
   referenceText: string;
-  voiceInstruction: string;
   upload: WavUploadPayload | null;
 }>({
   displayName: '',
   referenceText: '',
-  voiceInstruction: '',
   upload: null,
+});
+
+const operationTitle = computed(() => {
+  switch (state.operation) {
+    case 'loadingVoices':
+      return '正在加载音色库';
+    case 'syncingCloud':
+      return '正在从云端同步';
+    case 'refreshingCloud':
+      return '正在刷新云端运行时';
+    case 'uploadingAudio':
+      return '正在读取参考音频';
+    case 'recognizingAudio':
+      return '正在自动识别参考文本';
+    case 'savingVoice':
+      return '正在保存修改';
+    case 'creatingVoice':
+      return '正在创建音色';
+    case 'deletingVoice':
+      return '正在删除音色';
+    case 'settingCurrent':
+      return '正在设置当前音色';
+    default:
+      return '';
+  }
 });
 
 onMounted(() => {
@@ -58,12 +82,11 @@ async function submitDraft(): Promise<void> {
   await createLocalVoice({
     displayName: draft.displayName,
     referenceText: draft.referenceText,
-    voiceInstruction: draft.voiceInstruction,
+    voiceInstruction: '',
     upload: draft.upload,
   });
   draft.displayName = '';
   draft.referenceText = '';
-  draft.voiceInstruction = '';
   draft.upload = null;
   isCreating.value = false;
 }
@@ -84,8 +107,13 @@ async function pickWavFile(): Promise<WavUploadPayload | null> {
         resolve(null);
         return;
       }
-      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-      resolve({ fileName: file.name, bytes });
+      state.operation = 'uploadingAudio';
+      try {
+        const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+        resolve({ fileName: file.name, bytes });
+      } finally {
+        state.operation = null;
+      }
     };
     input.click();
   });
@@ -95,6 +123,10 @@ async function chooseDraftAudio(): Promise<void> {
   draft.upload = await pickWavFile();
   if (draft.upload) {
     state.lastMessage = `已选择 wav 参考音频：${draft.upload.fileName}`;
+    const text = await recognizeReferenceAudio(draft.upload);
+    if (text) {
+      draft.referenceText = text;
+    }
   }
 }
 
@@ -102,13 +134,19 @@ async function chooseDetailAudio(): Promise<void> {
   const upload = await pickWavFile();
   if (upload) {
     attachReferenceAudio(upload);
+    const text = await recognizeReferenceAudio(upload);
+    if (text) {
+      updateDetail({
+        referenceText: text,
+        referenceTextPreview: text.slice(0, 42),
+      });
+    }
   }
 }
 
 function clearAudio(): void {
   updateDetail({
     hasReferenceAudio: false,
-    referenceAudioPath: undefined,
     referenceAudioFileName: undefined,
   });
   state.pendingReferenceAudio = null;
@@ -118,6 +156,10 @@ function clearAudio(): void {
 async function syncAllVoices(): Promise<void> {
   await runSync('full');
 }
+
+async function refreshCloudRuntime(): Promise<void> {
+  await runSync('incremental');
+}
 </script>
 
 <template>
@@ -125,13 +167,24 @@ async function syncAllVoices(): Promise<void> {
     <VoiceLibraryToolbar
       :search="state.search"
       :loading="state.loading"
+      :operation="state.operation"
       :result-count="filteredVoices.length"
       :total-count="state.voices.length"
       @update:search="setSearch"
       @create="startCreate"
       @sync="syncAllVoices"
-      @refresh="loadVoices"
+      @refresh="refreshCloudRuntime"
     />
+
+    <Transition name="voice-operation">
+      <div v-if="state.operation" class="voice-operation-toast" role="status" aria-live="polite">
+        <span class="operation-spinner" aria-hidden="true"></span>
+        <span>
+          <strong>{{ operationTitle }}</strong>
+          <small>{{ state.lastMessage }}</small>
+        </span>
+      </div>
+    </Transition>
 
     <div v-if="isCreating" class="create-voice-layout">
       <aside class="create-guide">
@@ -159,11 +212,6 @@ async function syncAllVoices(): Promise<void> {
         </label>
 
         <label class="form-field">
-          <span>音色指令</span>
-          <input v-model="draft.voiceInstruction" placeholder="例如：低沉、稳定、播客旁白" />
-        </label>
-
-        <label class="form-field">
           <span>参考文本 *</span>
           <textarea
             v-model="draft.referenceText"
@@ -178,10 +226,36 @@ async function syncAllVoices(): Promise<void> {
             <strong>{{ draft.upload?.fileName ?? '尚未选择 wav 文件' }}</strong>
             <span>文件会保存到 ~/voice-cloner/library/custom-voices/。</span>
           </div>
-          <button class="ghost-button" type="button" @click="chooseDraftAudio">选择 wav</button>
+          <button
+            class="ghost-button"
+            type="button"
+            :class="{
+              'button--busy':
+                state.operation === 'uploadingAudio' || state.operation === 'recognizingAudio',
+            }"
+            :disabled="
+              state.operation === 'uploadingAudio' || state.operation === 'recognizingAudio'
+            "
+            @click="chooseDraftAudio"
+          >
+            {{
+              state.operation === 'recognizingAudio'
+                ? '识别中'
+                : state.operation === 'uploadingAudio'
+                  ? '上传中'
+                  : '选择 wav'
+            }}
+          </button>
         </div>
 
-        <button class="primary-button" type="submit" :disabled="state.saving">保存音色</button>
+        <button
+          class="primary-button"
+          type="submit"
+          :class="{ 'button--busy': state.operation === 'creatingVoice' }"
+          :disabled="state.saving"
+        >
+          {{ state.operation === 'creatingVoice' ? '保存中' : '保存音色' }}
+        </button>
       </form>
     </div>
 
@@ -199,6 +273,7 @@ async function syncAllVoices(): Promise<void> {
         :detail="state.detail"
         :saving="state.saving"
         :playing="state.playingVoiceName === state.detail?.voiceName"
+        :operation="state.operation"
         @update-detail="updateDetail"
         @preview="previewVoice"
         @save="saveSelectedVoice"

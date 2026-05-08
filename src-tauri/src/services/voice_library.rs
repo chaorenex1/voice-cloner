@@ -61,6 +61,58 @@ impl VoiceLibrary {
         self.write_profile(profile)
     }
 
+    pub fn save_custom_voice_fields(
+        &self,
+        voice_name: &str,
+        voice_instruction: String,
+        reference_text: String,
+        wav_upload: Option<(&str, &[u8])>,
+    ) -> AppResult<CustomVoiceProfile> {
+        let voice_name = require_voice_name(voice_name)?;
+        let now = Utc::now();
+        let mut profile = self
+            .get_custom_voice(&voice_name)
+            .unwrap_or_else(|_| CustomVoiceProfile {
+                voice_name: voice_name.clone(),
+                source_prompt_text: None,
+                asr_text: None,
+                voice_instruction: String::new(),
+                reference_audio_path: String::new(),
+                reference_text: String::new(),
+                sync_status: SyncStatus::LocalOnly,
+                last_synced_at: None,
+                created_at: now,
+            });
+
+        profile.voice_name = voice_name;
+        profile.voice_instruction = voice_instruction;
+        profile.reference_text = reference_text;
+
+        if let Some((wav_file_name, wav_bytes)) = wav_upload {
+            return self.save_custom_voice_wav_bytes(profile, wav_file_name, wav_bytes);
+        }
+
+        if profile.reference_audio_path.trim().is_empty() {
+            return Err(AppError::offline_job(
+                "referenceAudioBytes is required when no existing reference audio is stored",
+            ));
+        }
+
+        profile.sync_status = SyncStatus::PendingSync;
+        self.write_profile(profile)
+    }
+
+    pub fn reference_audio_path_for_voice(&self, voice_name: &str) -> AppResult<PathBuf> {
+        let profile = self.get_custom_voice(voice_name)?;
+        if profile.reference_audio_path.trim().is_empty() {
+            return Err(AppError::offline_job(format!(
+                "custom voice has no reference audio: {}",
+                profile.voice_name
+            )));
+        }
+        Ok(PathBuf::from(profile.reference_audio_path))
+    }
+
     pub fn mark_sync_status(&self, voice_name: &str, sync_status: SyncStatus) -> AppResult<CustomVoiceProfile> {
         let mut profile = self.get_custom_voice(voice_name)?;
         profile.sync_status = sync_status.clone();
@@ -325,6 +377,21 @@ mod tests {
         assert_eq!(deleted.voice_name, "My Voice");
         assert!(!std::path::PathBuf::from(deleted.reference_audio_path).exists());
         assert!(library.list_custom_voices().unwrap().is_empty());
+    }
+
+    #[test]
+    fn voice_library_updates_text_fields_without_requiring_frontend_audio_path() {
+        let library = library();
+        let saved = library.save_custom_voice(profile()).unwrap();
+
+        let updated = library
+            .save_custom_voice_fields("My Voice", "brighter".into(), "updated reference text".into(), None)
+            .unwrap();
+
+        assert_eq!(updated.voice_instruction, "brighter");
+        assert_eq!(updated.reference_text, "updated reference text");
+        assert_eq!(updated.reference_audio_path, saved.reference_audio_path);
+        assert!(std::path::PathBuf::from(updated.reference_audio_path).exists());
     }
 
     #[test]

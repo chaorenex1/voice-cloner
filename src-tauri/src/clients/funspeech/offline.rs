@@ -1,6 +1,12 @@
+use std::time::Duration;
+
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::settings::BackendConfig;
+use crate::{
+    app::error::{AppError, AppResult},
+    domain::settings::BackendConfig,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -22,8 +28,58 @@ impl OfflineEndpoints {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct AsrTranscriptionResponse {
+    result: Option<String>,
+    text: Option<String>,
+    message: Option<String>,
+}
+
+pub fn transcribe_wav_bytes(config: &BackendConfig, wav_bytes: &[u8]) -> AppResult<String> {
+    config.validate("backend.asr").map_err(AppError::invalid_settings)?;
+    if wav_bytes.is_empty() {
+        return Err(AppError::offline_job("reference audio bytes are required for ASR"));
+    }
+
+    let endpoint = rest_url(&config.base_url, "/stream/v1/asr");
+    let response = Client::builder()
+        .timeout(Duration::from_millis(config.timeout_ms.max(1)))
+        .build()
+        .map_err(http_error)?
+        .post(endpoint)
+        .query(&[
+            ("format", "wav"),
+            ("sample_rate", "16000"),
+            ("enable_punctuation_prediction", "true"),
+            ("enable_inverse_text_normalization", "true"),
+            ("enable_voice_detection", "true"),
+        ])
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .body(wav_bytes.to_vec())
+        .send()
+        .map_err(http_error)?
+        .error_for_status()
+        .map_err(http_error)?
+        .json::<AsrTranscriptionResponse>()
+        .map_err(http_error)?;
+
+    let text = response.text.or(response.result).unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        return Err(AppError::offline_job(
+            response
+                .message
+                .unwrap_or_else(|| "FunSpeech ASR returned an empty transcription".into()),
+        ));
+    }
+    Ok(text)
+}
+
 fn rest_url(base_url: &str, path: &str) -> String {
     format!("{}{}", base_url.trim_end_matches('/'), path)
+}
+
+fn http_error(error: reqwest::Error) -> AppError {
+    AppError::offline_job(format!("FunSpeech ASR request failed: {error}"))
 }
 
 #[cfg(test)]

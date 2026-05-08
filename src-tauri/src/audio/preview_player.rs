@@ -1,17 +1,17 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::{self, Sender},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        mpsc::{self, Sender},
     },
     thread,
     time::Duration,
 };
 
 use cpal::{
-    traits::{DeviceTrait, StreamTrait},
     SampleFormat, StreamConfig,
+    traits::{DeviceTrait, StreamTrait},
 };
 use serde::Serialize;
 
@@ -25,11 +25,13 @@ pub struct VoicePreviewState {
 
 #[derive(Debug, Default)]
 pub struct VoicePreviewPlayer {
-    current: Mutex<Option<PreviewHandle>>,
+    current: Arc<Mutex<Option<PreviewHandle>>>,
+    next_id: AtomicU64,
 }
 
 #[derive(Debug)]
 struct PreviewHandle {
+    id: u64,
     voice_name: String,
     stop: Sender<()>,
 }
@@ -47,6 +49,7 @@ impl VoicePreviewPlayer {
         voice_name: String,
         wav_path: impl Into<PathBuf>,
         device: cpal::Device,
+        on_finished: impl FnOnce(String) + Send + 'static,
     ) -> AppResult<VoicePreviewState> {
         let wav_path = wav_path.into();
         let mut current = self.current.lock().expect("voice preview player lock poisoned");
@@ -58,8 +61,16 @@ impl VoicePreviewPlayer {
         }
 
         stop_current(&mut current);
-        let stop = spawn_preview_thread(voice_name.clone(), wav_path, device)?;
-        *current = Some(PreviewHandle { voice_name, stop });
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let stop = spawn_preview_thread(
+            id,
+            voice_name.clone(),
+            wav_path,
+            device,
+            Arc::clone(&self.current),
+            on_finished,
+        )?;
+        *current = Some(PreviewHandle { id, voice_name, stop });
         Ok(self.snapshot_from_guard(&current))
     }
 
@@ -89,7 +100,14 @@ fn stop_current(current: &mut Option<PreviewHandle>) {
     }
 }
 
-fn spawn_preview_thread(voice_name: String, wav_path: PathBuf, device: cpal::Device) -> AppResult<Sender<()>> {
+fn spawn_preview_thread(
+    id: u64,
+    voice_name: String,
+    wav_path: PathBuf,
+    device: cpal::Device,
+    current: Arc<Mutex<Option<PreviewHandle>>>,
+    on_finished: impl FnOnce(String) + Send + 'static,
+) -> AppResult<Sender<()>> {
     let wav = load_wav(&wav_path)?;
     let supported_config = device
         .default_output_config()
@@ -127,12 +145,33 @@ fn spawn_preview_thread(voice_name: String, wav_path: PathBuf, device: cpal::Dev
                 return;
             }
             let _ = ready_tx.send(Ok(()));
-            while stop_rx.recv_timeout(Duration::from_millis(100)).is_err() {
-                if stopped.load(Ordering::Relaxed) {
-                    break;
+            let mut finished_naturally = false;
+            loop {
+                match stop_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if stopped.load(Ordering::Relaxed) {
+                            finished_naturally = true;
+                            break;
+                        }
+                    }
                 }
             }
             drop(stream);
+            if finished_naturally {
+                let should_emit = {
+                    let mut current = current.lock().expect("voice preview player lock poisoned");
+                    if current.as_ref().map(|handle| handle.id) == Some(id) {
+                        current.take();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if should_emit {
+                    on_finished(voice_name);
+                }
+            }
         })
         .map_err(|source| AppError::io("starting voice preview thread", source))?;
 

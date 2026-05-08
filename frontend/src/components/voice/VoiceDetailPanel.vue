@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { VoiceDetail } from '../../utils/types/voice';
 
-defineProps<{
+const props = defineProps<{
   detail: VoiceDetail | null;
   saving: boolean;
   playing: boolean;
+  operation: string | null;
 }>();
 
 defineEmits<{
@@ -15,6 +17,12 @@ defineEmits<{
   uploadAudio: [];
   clearAudio: [];
 }>();
+
+const audioBusy = computed(
+  () => props.operation === 'uploadingAudio' || props.operation === 'recognizingAudio'
+);
+const deleting = computed(() => props.operation === 'deletingVoice');
+const savingVoice = computed(() => props.operation === 'savingVoice');
 </script>
 
 <template>
@@ -49,18 +57,20 @@ defineEmits<{
           <button
             class="primary-button"
             type="button"
+            :class="{ 'button--busy': savingVoice }"
             :disabled="saving || !detail.editable"
             @click="$emit('save')"
           >
-            保存修改
+            {{ savingVoice ? '保存中' : '保存修改' }}
           </button>
           <button
             class="danger-button"
             type="button"
-            :disabled="!detail.editable"
+            :class="{ 'button--busy': deleting }"
+            :disabled="saving || !detail.editable"
             @click="$emit('delete')"
           >
-            删除
+            {{ deleting ? '删除中' : '删除' }}
           </button>
         </div>
       </div>
@@ -73,20 +83,6 @@ defineEmits<{
             :readonly="!detail.editable"
             @input="
               $emit('updateDetail', { displayName: ($event.target as HTMLInputElement).value })
-            "
-          />
-        </label>
-
-        <label class="form-field">
-          <span>音色指令</span>
-          <input
-            :value="detail.voiceInstruction ?? ''"
-            :readonly="!detail.editable"
-            placeholder="描述音色气质、语速或使用场景"
-            @input="
-              $emit('updateDetail', {
-                voiceInstruction: ($event.target as HTMLInputElement).value,
-              })
             "
           />
         </label>
@@ -110,24 +106,29 @@ defineEmits<{
       <div class="audio-panel">
         <div>
           <p class="module-eyebrow">参考音频</p>
-          <strong>{{
-            detail.referenceAudioFileName ?? detail.referenceAudioPath ?? '尚未上传参考音频'
-          }}</strong>
+          <strong>{{ detail.referenceAudioFileName ?? '尚未上传参考音频' }}</strong>
           <span>只支持 wav 参考音频，试听会使用设置页选择的输出设备。</span>
         </div>
         <div class="audio-actions">
           <button
             class="ghost-button"
             type="button"
-            :disabled="!detail.editable"
+            :class="{ 'button--busy': audioBusy }"
+            :disabled="!detail.editable || audioBusy"
             @click="$emit('uploadAudio')"
           >
-            重新上传
+            {{
+              operation === 'recognizingAudio'
+                ? '识别中'
+                : operation === 'uploadingAudio'
+                  ? '上传中'
+                  : '重新上传'
+            }}
           </button>
           <button
             class="ghost-button"
             type="button"
-            :disabled="!detail.editable"
+            :disabled="!detail.editable || audioBusy"
             @click="$emit('clearAudio')"
           >
             清除
