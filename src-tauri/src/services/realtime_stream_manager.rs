@@ -5,15 +5,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+use cpal::{
+    traits::{DeviceTrait, StreamTrait},
+    SampleFormat as CpalSampleFormat, StreamConfig,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use cpal::{
-    traits::{DeviceTrait, StreamTrait},
-    SampleFormat as CpalSampleFormat, StreamConfig,
-};
 
 use crate::{
     app::error::{AppError, AppResult},
@@ -93,6 +93,17 @@ impl RealtimeStreamManager {
         virtual_mic: Arc<SelectableVirtualMicAdapter>,
         write_virtual_mic: bool,
     ) -> AppResult<RealtimeStreamSnapshot> {
+        tracing::debug!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            voice_name = %session.voice_name,
+            websocket_url = %session.websocket_url,
+            sample_rate = format.sample_rate,
+            frame_ms = format.frame_ms,
+            write_virtual_mic,
+            has_input_device = input_device.is_some(),
+            "realtime stream start requested"
+        );
         self.stop(&session.session_id).await;
 
         let snapshot = Arc::new(RwLock::new(RealtimeStreamSnapshot::pending(&session)));
@@ -113,6 +124,7 @@ impl RealtimeStreamManager {
 
         match tokio::time::timeout(Duration::from_secs(8), ready_rx).await {
             Ok(Ok(Ok(()))) => {
+                tracing::debug!(%session_id, "realtime stream ready");
                 self.streams
                     .write()
                     .expect("realtime stream manager lock poisoned")
@@ -125,28 +137,43 @@ impl RealtimeStreamManager {
                     );
                 Ok(snapshot.read().expect("realtime snapshot lock poisoned").clone())
             }
-            Ok(Ok(Err(error))) => Err(error),
-            Ok(Err(_)) => Err(AppError::realtime_session(
-                "FunSpeech realtime stream exited before it became ready",
-            )),
-            Err(_) => Err(AppError::realtime_session(
-                "timed out while connecting FunSpeech realtime stream",
-            )),
+            Ok(Ok(Err(error))) => {
+                tracing::warn!(%session_id, %error, "realtime stream failed while becoming ready");
+                Err(error)
+            }
+            Ok(Err(_)) => {
+                tracing::warn!(%session_id, "realtime stream exited before ready");
+                Err(AppError::realtime_session(
+                    "FunSpeech realtime stream exited before it became ready",
+                ))
+            }
+            Err(_) => {
+                tracing::warn!(%session_id, "realtime stream ready timeout");
+                Err(AppError::realtime_session(
+                    "timed out while connecting FunSpeech realtime stream",
+                ))
+            }
         }
     }
 
     pub async fn stop(&self, session_id: &str) -> Option<RealtimeStreamSnapshot> {
+        tracing::debug!(%session_id, "realtime stream stop requested");
         let handle = self
             .streams
             .write()
             .expect("realtime stream manager lock poisoned")
             .remove(session_id)?;
         let _ = handle.control.send(RealtimeControl::Stop);
-        let snapshot = handle
-            .snapshot
-            .read()
-            .expect("realtime snapshot lock poisoned")
-            .clone();
+        let snapshot = handle.snapshot.read().expect("realtime snapshot lock poisoned").clone();
+        tracing::debug!(
+            %session_id,
+            websocket_state = %snapshot.websocket_state,
+            sent_frames = snapshot.sent_frames,
+            received_frames = snapshot.received_frames,
+            last_event = ?snapshot.last_event,
+            last_error = ?snapshot.last_error,
+            "realtime stream stop signal sent"
+        );
         Some(snapshot)
     }
 
@@ -176,6 +203,7 @@ impl RealtimeStreamManager {
     }
 
     fn send_control(&self, session_id: &str, control: RealtimeControl) -> AppResult<()> {
+        tracing::debug!(%session_id, ?control, "sending realtime stream control");
         let streams = self.streams.read().expect("realtime stream manager lock poisoned");
         let handle = streams
             .get(session_id)
@@ -197,14 +225,33 @@ async fn run_stream(
     mut control_rx: mpsc::UnboundedReceiver<RealtimeControl>,
     ready_tx: oneshot::Sender<AppResult<()>>,
 ) {
+    tracing::debug!(
+        session_id = %session.session_id,
+        trace_id = %session.trace_id,
+        voice_name = %session.voice_name,
+        websocket_url = %session.websocket_url,
+        "realtime stream task starting"
+    );
     let mut ready_tx = Some(ready_tx);
     let result = async {
         let (websocket, _) = connect_async(&session.websocket_url)
             .await
             .map_err(|error| AppError::realtime_session(format!("FunSpeech websocket connect failed: {error}")))?;
+        tracing::debug!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            "FunSpeech websocket connected"
+        );
         let (mut write, mut read) = websocket.split();
 
         let started = read_json_event(&mut read).await?;
+        tracing::debug!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            event = ?event_name(&started),
+            payload = %started,
+            "FunSpeech realtime event received"
+        );
         patch_snapshot(&snapshot, |state| apply_json_event(state, &started));
         if event_name(&started) != Some("session_started") {
             return Err(AppError::realtime_session(format!(
@@ -223,8 +270,23 @@ async fn run_stream(
             .send(Message::Text(configure.to_string()))
             .await
             .map_err(websocket_error)?;
+        tracing::debug!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            voice_name = %session.voice_name,
+            sample_rate = format.sample_rate,
+            frame_ms = format.frame_ms,
+            "FunSpeech configure event sent"
+        );
 
         let configured = read_json_event(&mut read).await?;
+        tracing::debug!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            event = ?event_name(&configured),
+            payload = %configured,
+            "FunSpeech realtime event received"
+        );
         patch_snapshot(&snapshot, |state| apply_json_event(state, &configured));
         if event_name(&configured) != Some("configured") {
             return Err(AppError::realtime_session(format!(
@@ -242,8 +304,18 @@ async fn run_stream(
 
         let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<RealtimeAudioChunk>();
         let _input_stop = if let Some(device) = input_device {
+            tracing::debug!(
+                session_id = %session.session_id,
+                trace_id = %session.trace_id,
+                "starting realtime input capture thread"
+            );
             Some(spawn_input_thread(device, audio_tx.clone(), format)?)
         } else {
+            tracing::debug!(
+                session_id = %session.session_id,
+                trace_id = %session.trace_id,
+                "no input device resolved; using silence source"
+            );
             spawn_silence_source(audio_tx.clone(), format);
             None
         };
@@ -262,6 +334,17 @@ async fn run_stream(
                         state.sent_bytes += chunk.bytes.len() as u64;
                         state.input_level = chunk.level;
                     });
+                    if sequence % 50 == 0 {
+                        tracing::debug!(
+                            session_id = %session.session_id,
+                            trace_id = %session.trace_id,
+                            sent_frames = sequence,
+                            chunk_bytes = chunk.bytes.len(),
+                            input_rms = chunk.level.rms,
+                            input_peak = chunk.level.peak,
+                            "realtime audio frames sent"
+                        );
+                    }
                 }
                 Some(control) = control_rx.recv() => {
                     match control {
@@ -271,6 +354,12 @@ async fn run_stream(
                                 "parameters": runtime_params.values,
                             });
                             write.send(Message::Text(message.to_string())).await.map_err(websocket_error)?;
+                            tracing::debug!(
+                                session_id = %session.session_id,
+                                trace_id = %session.trace_id,
+                                params = ?runtime_params.values,
+                                "realtime params update sent"
+                            );
                         }
                         RealtimeControl::SwitchVoice(voice_name) => {
                             let message = json!({
@@ -278,9 +367,20 @@ async fn run_stream(
                                 "voice_name": voice_name,
                             });
                             write.send(Message::Text(message.to_string())).await.map_err(websocket_error)?;
+                            tracing::debug!(
+                                session_id = %session.session_id,
+                                trace_id = %session.trace_id,
+                                %voice_name,
+                                "realtime voice switch sent"
+                            );
                         }
                         RealtimeControl::Stop => {
                             let _ = write.send(Message::Text(json!({"event": "stop"}).to_string())).await;
+                            tracing::debug!(
+                                session_id = %session.session_id,
+                                trace_id = %session.trace_id,
+                                "realtime stop event sent"
+                            );
                             patch_snapshot(&snapshot, |state| {
                                 state.websocket_state = "stopping".into();
                                 state.last_event = Some("stop_requested".into());
@@ -317,16 +417,42 @@ async fn run_stream(
                                     state.last_error = Some(error.to_string());
                                 }
                             });
+                            if sequence % 50 == 0 {
+                                tracing::debug!(
+                                    session_id = %session.session_id,
+                                    trace_id = %session.trace_id,
+                                    received_for_sequence = sequence,
+                                    response_bytes = bytes.len(),
+                                    latency_ms = ?latency_ms,
+                                    write_virtual_mic,
+                                    virtual_mic_ok = virtual_mic_result.is_ok(),
+                                    "realtime audio frame received"
+                                );
+                            }
                         }
                         Some(Ok(Message::Text(text))) => {
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(value) => {
+                                    tracing::debug!(
+                                        session_id = %session.session_id,
+                                        trace_id = %session.trace_id,
+                                        event = ?event_name(&value),
+                                        payload = %value,
+                                        "FunSpeech realtime event received"
+                                    );
                                     patch_snapshot(&snapshot, |state| apply_json_event(state, &value));
                                     if event_name(&value) == Some("session_completed") {
                                         break;
                                     }
                                 }
                                 Err(error) => {
+                                    tracing::warn!(
+                                        session_id = %session.session_id,
+                                        trace_id = %session.trace_id,
+                                        %error,
+                                        %text,
+                                        "invalid FunSpeech event JSON"
+                                    );
                                     patch_snapshot(&snapshot, |state| {
                                         state.last_error = Some(format!("invalid FunSpeech event JSON: {error}"));
                                     });
@@ -334,6 +460,11 @@ async fn run_stream(
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => {
+                            tracing::debug!(
+                                session_id = %session.session_id,
+                                trace_id = %session.trace_id,
+                                "FunSpeech websocket closed"
+                            );
                             patch_snapshot(&snapshot, |state| {
                                 state.websocket_state = "closed".into();
                                 state.last_event = Some("closed".into());
@@ -352,11 +483,22 @@ async fn run_stream(
                 state.websocket_state = "stopped".into();
             }
         });
+        tracing::debug!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            "realtime stream task stopped"
+        );
         Ok(())
     }
     .await;
 
     if let Err(error) = result {
+        tracing::warn!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            %error,
+            "realtime stream task failed"
+        );
         patch_snapshot(&snapshot, |state| {
             state.websocket_state = "error".into();
             state.last_error = Some(error.to_string());
@@ -485,9 +627,7 @@ fn start_input_stream_on_thread(
     }
     .map_err(|error| AppError::audio(error.to_string()))?;
 
-    stream
-        .play()
-        .map_err(|error| AppError::audio(error.to_string()))?;
+    stream.play().map_err(|error| AppError::audio(error.to_string()))?;
     Ok(stream)
 }
 
@@ -582,10 +722,7 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
     }
 }
 
-fn patch_snapshot(
-    snapshot: &Arc<RwLock<RealtimeStreamSnapshot>>,
-    patch: impl FnOnce(&mut RealtimeStreamSnapshot),
-) {
+fn patch_snapshot(snapshot: &Arc<RwLock<RealtimeStreamSnapshot>>, patch: impl FnOnce(&mut RealtimeStreamSnapshot)) {
     patch(&mut snapshot.write().expect("realtime snapshot lock poisoned"));
 }
 

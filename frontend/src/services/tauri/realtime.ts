@@ -5,6 +5,12 @@ import type {
   RealtimeStreamSnapshot,
   RuntimeParams,
 } from '../../utils/types/realtime';
+import {
+  logRealtimeDebug,
+  logRealtimeError,
+  summarizeRealtimeSession,
+  summarizeRealtimeSnapshot,
+} from '../../utils/realtime-debug';
 
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -15,10 +21,64 @@ async function invokeRealtime<T>(
   args: Record<string, unknown>,
   fallback: () => T
 ): Promise<T> {
-  if (!isTauriRuntime()) {
-    return fallback();
+  const startedAt = performance.now();
+  const tauriRuntime = isTauriRuntime();
+  const runtime = tauriRuntime ? 'tauri' : 'mock';
+  logRealtimeDebug(`ipc:${command}:start`, { runtime, args });
+
+  if (!tauriRuntime) {
+    const response = fallback();
+    logRealtimeDebug(`ipc:${command}:mock-success`, {
+      durationMs: Math.round(performance.now() - startedAt),
+      response: summarizeRealtimeResponse(response),
+    });
+    return response;
   }
-  return invoke<T>(command, args);
+
+  try {
+    const response = await invoke<T>(command, args);
+    logRealtimeDebug(`ipc:${command}:success`, {
+      durationMs: Math.round(performance.now() - startedAt),
+      response: summarizeRealtimeResponse(response),
+    });
+    return response;
+  } catch (error) {
+    logRealtimeError(`ipc:${command}:error`, error, {
+      durationMs: Math.round(performance.now() - startedAt),
+      args,
+    });
+    throw error;
+  }
+}
+
+function summarizeRealtimeResponse(response: unknown): unknown {
+  if (isRealtimeSession(response)) {
+    return summarizeRealtimeSession(response);
+  }
+  if (isRealtimeSnapshot(response)) {
+    return summarizeRealtimeSnapshot(response);
+  }
+  return response;
+}
+
+function isRealtimeSession(value: unknown): value is RealtimeSession {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'sessionId' in value &&
+    'traceId' in value &&
+    'status' in value
+  );
+}
+
+function isRealtimeSnapshot(value: unknown): value is RealtimeStreamSnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'sessionId' in value &&
+    'websocketState' in value &&
+    'sentFrames' in value
+  );
 }
 
 function mockSession(request: CreateRealtimeSessionRequest): RealtimeSession {

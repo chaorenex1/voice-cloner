@@ -10,10 +10,15 @@ use app::{error::AppResult, state::AppState};
 use storage::app_paths::AppPaths;
 
 fn initialize_tracing() {
+    let default_filter = if cfg!(debug_assertions) {
+        "voice_cloner=debug,tauri=warn"
+    } else {
+        "voice_cloner=info,tauri=warn"
+    };
+
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "voice_cloner=info,tauri=warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| default_filter.into()),
         )
         .try_init();
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue';
 import { useRealtimeStore } from '../stores/realtime.store';
+import { logRealtimeDebug } from '../utils/realtime-debug';
 
 const realtime = useRealtimeStore();
 const emit = defineEmits<{
@@ -37,15 +38,18 @@ const callHint = computed(() => {
 });
 
 onMounted(async () => {
+  logRealtimeDebug('page:mounted');
   await realtime.load();
   refreshTimer = window.setInterval(() => {
     void realtime.refreshSnapshot();
   }, 700);
+  logRealtimeDebug('page:refresh-timer-started', { intervalMs: 700 });
 });
 
 onBeforeUnmount(() => {
   if (refreshTimer !== undefined) {
     window.clearInterval(refreshTimer);
+    logRealtimeDebug('page:refresh-timer-stopped');
   }
 });
 </script>
