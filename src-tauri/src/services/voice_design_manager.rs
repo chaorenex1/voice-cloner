@@ -345,6 +345,24 @@ mod tests {
         VoiceLibrary::new(temp_root("voice-library")).unwrap()
     }
 
+    fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for sample in samples {
+                writer.write_sample((sample * i16::MAX as f32) as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        cursor.into_inner()
+    }
+
     #[test]
     fn voice_design_manager_completes_text_prompt_flow_and_saves_profile() {
         let manager = VoiceDesignManager::default();
@@ -390,7 +408,7 @@ mod tests {
         assert_eq!(preview.status, VoiceDesignStatus::PreviewReady);
         let preview_audio_path = preview.reference_audio_path.unwrap();
         assert!(preview_audio_path.ends_with(".wav"));
-        std::fs::write(&preview_audio_path, b"preview wav").unwrap();
+        std::fs::write(&preview_audio_path, wav_bytes(&[0.2])).unwrap();
 
         let profile = manager
             .save_custom_voice(

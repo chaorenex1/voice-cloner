@@ -1,9 +1,13 @@
-use std::{path::PathBuf, sync::RwLock};
+use std::{
+    path::{Path, PathBuf},
+    sync::RwLock,
+};
 
 use chrono::Utc;
 
 use crate::{
     app::error::{AppError, AppResult},
+    audio::normalizer::{normalize_wav_file_in_place, AudioNormalizationConfig},
     domain::{
         voice::{CustomVoiceProfile, SyncStatus},
         voice_sync::RemoteVoiceInfo,
@@ -55,8 +59,11 @@ impl VoiceLibrary {
         if profile.created_at.timestamp_millis() == 0 {
             profile.created_at = Utc::now();
         }
-        let target_path = self.audio_path(&voice_name)?;
+        let previous_audio_path = profile.reference_audio_path.clone();
+        let target_path = self.generated_audio_path()?;
         std::fs::write(&target_path, wav_bytes).map_err(|source| AppError::io("writing custom voice wav", source))?;
+        normalize_reference_audio_or_cleanup(&target_path)?;
+        remove_file_if_present(&previous_audio_path, Some(&target_path))?;
         profile.reference_audio_path = target_path.to_string_lossy().into_owned();
         self.write_profile(profile)
     }
@@ -161,10 +168,7 @@ impl VoiceLibrary {
         if path.exists() {
             std::fs::remove_file(&path).map_err(|source| AppError::io("deleting custom voice profile", source))?;
         }
-        let audio_path = self.audio_path(&profile.voice_name)?;
-        if audio_path.exists() {
-            std::fs::remove_file(&audio_path).map_err(|source| AppError::io("deleting custom voice audio", source))?;
-        }
+        remove_file_if_present(&profile.reference_audio_path, None)?;
         self.names
             .write()
             .expect("voice library lock poisoned")
@@ -217,15 +221,20 @@ impl VoiceLibrary {
         Ok(self.custom_voices_dir.join(format!("{safe_name}.json")))
     }
 
-    fn audio_path(&self, voice_name: &str) -> AppResult<PathBuf> {
-        let safe_name = sanitize_voice_name(voice_name);
-        if safe_name.is_empty() {
-            return Err(AppError::offline_job("voiceName must contain a safe file name segment"));
+    fn generated_audio_path(&self) -> AppResult<PathBuf> {
+        for _ in 0..10 {
+            let path = self
+                .custom_voices_dir
+                .join(format!("voice-{}.wav", Utc::now().timestamp_millis()));
+            if !path.exists() {
+                return Ok(path);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        Ok(self.custom_voices_dir.join(format!("{safe_name}.wav")))
+        Err(AppError::offline_job("failed to allocate custom voice audio file name"))
     }
 
-    fn store_reference_audio(&self, voice_name: &str, source_audio_path: &str) -> AppResult<String> {
+    fn store_reference_audio(&self, _voice_name: &str, source_audio_path: &str) -> AppResult<String> {
         let source_audio_path = require_non_empty("referenceAudioPath", source_audio_path)?;
         let source_path = PathBuf::from(source_audio_path);
         require_wav_file_name(
@@ -241,11 +250,12 @@ impl VoiceLibrary {
             )));
         }
 
-        let target_path = self.audio_path(voice_name)?;
+        let target_path = self.generated_audio_path()?;
         if source_path != target_path {
             std::fs::copy(&source_path, &target_path)
                 .map_err(|source| AppError::io("copying custom voice audio", source))?;
         }
+        normalize_reference_audio_or_cleanup(&target_path)?;
         Ok(target_path.to_string_lossy().into_owned())
     }
 }
@@ -295,6 +305,28 @@ fn require_wav_file_name(value: &str) -> AppResult<()> {
     }
 }
 
+fn remove_file_if_present(path: &str, except: Option<&Path>) -> AppResult<()> {
+    if path.trim().is_empty() {
+        return Ok(());
+    }
+    let path = Path::new(path);
+    if except == Some(path) {
+        return Ok(());
+    }
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|source| AppError::io("deleting stale custom voice audio", source))?;
+    }
+    Ok(())
+}
+
+fn normalize_reference_audio_or_cleanup(path: &Path) -> AppResult<()> {
+    if let Err(error) = normalize_wav_file_in_place(path, AudioNormalizationConfig::default()) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn sanitize_voice_name(value: &str) -> String {
     let mut safe_name = String::new();
     for ch in value.chars() {
@@ -332,8 +364,21 @@ mod tests {
         let source_dir = temp_root("source-audio");
         std::fs::create_dir_all(&source_dir).unwrap();
         let path = source_dir.join("preview.wav");
-        std::fs::write(&path, b"fake wav").unwrap();
+        std::fs::write(&path, wav_bytes(&[0.2, -0.05])).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    fn reference_audio_file_name(path: &str) -> String {
+        std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn is_generated_voice_audio_file(path: &str) -> bool {
+        let file_name = reference_audio_file_name(path);
+        file_name.starts_with("voice-") && file_name.ends_with(".wav")
     }
 
     fn profile() -> CustomVoiceProfile {
@@ -356,8 +401,8 @@ mod tests {
         let saved = library.save_custom_voice(profile()).unwrap();
 
         assert_eq!(saved.sync_status, SyncStatus::PendingSync);
-        assert!(saved.reference_audio_path.ends_with("myvoice.wav"));
-        assert_eq!(std::fs::read(&saved.reference_audio_path).unwrap(), b"fake wav");
+        assert!(is_generated_voice_audio_file(&saved.reference_audio_path));
+        assert!(wav_peak(&std::fs::read(&saved.reference_audio_path).unwrap()) > 0.88);
         assert_eq!(
             library.get_custom_voice("My Voice").unwrap().voice_instruction,
             "warm, calm"
@@ -396,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_library_supports_non_ascii_voice_names_with_safe_file_segments() {
+    fn voice_library_supports_non_ascii_voice_names_with_generated_audio_files() {
         let library = library();
         let mut profile = profile();
         profile.voice_name = "中文女".into();
@@ -404,11 +449,32 @@ mod tests {
         let saved = library.save_custom_voice(profile).unwrap();
 
         assert_eq!(saved.voice_name, "中文女");
-        assert!(saved.reference_audio_path.ends_with("_x4e2d_x6587_x5973.wav"));
+        assert!(is_generated_voice_audio_file(&saved.reference_audio_path));
         assert_eq!(
             library.get_custom_voice("中文女").unwrap().voice_instruction,
             "warm, calm"
         );
+    }
+
+    #[test]
+    fn voice_library_replaces_reference_audio_with_generated_file_name() {
+        let library = library();
+        let saved = library.save_custom_voice(profile()).unwrap();
+        let old_audio_path = saved.reference_audio_path.clone();
+
+        let updated = library
+            .save_custom_voice_fields(
+                "My Voice",
+                "brighter".into(),
+                "new text".into(),
+                Some(("new-reference.wav", &wav_bytes(&[0.2]))),
+            )
+            .unwrap();
+
+        assert!(is_generated_voice_audio_file(&updated.reference_audio_path));
+        assert_ne!(updated.reference_audio_path, old_audio_path);
+        assert!(!std::path::PathBuf::from(old_audio_path).exists());
+        assert!(wav_peak(&std::fs::read(updated.reference_audio_path).unwrap()) > 0.88);
     }
 
     #[test]
@@ -420,5 +486,31 @@ mod tests {
         let error = library.save_custom_voice(profile).unwrap_err().to_string();
 
         assert!(error.contains("reference audio file not found"));
+    }
+
+    fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for sample in samples {
+                writer.write_sample((sample * i16::MAX as f32) as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    fn wav_peak(bytes: &[u8]) -> f32 {
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
+        reader
+            .samples::<i16>()
+            .map(|sample| (sample.unwrap() as f32 / i16::MAX as f32).abs())
+            .fold(0.0_f32, f32::max)
     }
 }

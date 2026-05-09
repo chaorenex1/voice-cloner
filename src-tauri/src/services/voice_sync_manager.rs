@@ -280,8 +280,26 @@ mod tests {
         let source_dir = temp_path("sync-source");
         std::fs::create_dir_all(&source_dir).unwrap();
         let path = source_dir.join("preview.wav");
-        std::fs::write(&path, b"sync preview wav").unwrap();
+        std::fs::write(&path, wav_bytes(&[0.2])).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for sample in samples {
+                writer.write_sample((sample * i16::MAX as f32) as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        cursor.into_inner()
     }
 
     fn seed_voice(library: &VoiceLibrary) {

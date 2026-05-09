@@ -14,6 +14,7 @@ use crate::{
         error::{AppError, AppResult},
         trace::{new_entity_id, TraceId},
     },
+    audio::normalizer::{normalize_wav_bytes, AudioNormalizationConfig},
     clients::funspeech::{
         offline::{transcribe_audio_bytes, transcribe_audio_bytes_async, OfflineEndpoints},
         tts::{synthesize_text, OfflineTtsRequest},
@@ -423,6 +424,23 @@ impl OfflineJobManager {
         if let Some(cancelled) = self.cancelled_job(&running.job_id)? {
             return Ok(cancelled);
         }
+        let audio_bytes = if running.output_format.eq_ignore_ascii_case("wav") {
+            self.patch_job_and_emit(
+                &running.job_id,
+                |job| {
+                    job.stage = "normalizingAudio".into();
+                    job.progress = 89;
+                    job.updated_at = Utc::now();
+                },
+                on_update,
+            )?;
+            normalize_offline_wav_bytes(audio_bytes)?
+        } else {
+            audio_bytes.to_vec()
+        };
+        if let Some(cancelled) = self.cancelled_job(&running.job_id)? {
+            return Ok(cancelled);
+        }
         self.patch_job_and_emit(
             &running.job_id,
             |job| {
@@ -432,7 +450,7 @@ impl OfflineJobManager {
             },
             on_update,
         )?;
-        let artifact = cache.write_offline_artifact_bytes(&running.job_id, &running.output_format, audio_bytes)?;
+        let artifact = cache.write_offline_artifact_bytes(&running.job_id, &running.output_format, &audio_bytes)?;
         self.patch_job_and_emit(
             &running.job_id,
             |job| {
@@ -698,6 +716,10 @@ fn ensure_wav_audio(output_format: &str, audio_bytes: &[u8], content_type: Optio
     Err(AppError::offline_job(format!(
         "FunSpeech TTS returned non-WAV audio for wav output (content-type: {content_type})"
     )))
+}
+
+fn normalize_offline_wav_bytes(audio_bytes: &[u8]) -> AppResult<Vec<u8>> {
+    normalize_wav_bytes(audio_bytes, AudioNormalizationConfig::default()).map(|(normalized, _report)| normalized)
 }
 
 fn is_wav_bytes(audio_bytes: &[u8]) -> bool {
@@ -1148,7 +1170,7 @@ mod tests {
             )
             .unwrap();
         let completed = manager
-            .complete_with_audio_bytes(&created, &cache, b"old wav", &|_| {})
+            .complete_with_audio_bytes(&created, &cache, &test_wav_bytes(&[0.2]), &|_| {})
             .unwrap();
         let old_path = completed.local_artifact_path.clone().unwrap();
 
@@ -1177,14 +1199,14 @@ mod tests {
             )
             .unwrap();
         manager
-            .complete_with_audio_bytes(&created, &cache, b"new wav", &|_| {})
+            .complete_with_audio_bytes(&created, &cache, &test_wav_bytes(&[0.2]), &|_| {})
             .unwrap();
         let target = std::env::temp_dir().join(format!("voice-cloner-download-{}.wav", created.job_id));
 
         let copied = manager.copy_artifact_to(&created.job_id, &target).unwrap();
 
         assert_eq!(copied, target);
-        assert_eq!(std::fs::read(copied).unwrap(), b"new wav");
+        assert!(wav_peak(&std::fs::read(copied).unwrap()) > 0.88);
     }
 
     #[test]
@@ -1236,8 +1258,34 @@ mod tests {
         writer.finalize().unwrap();
     }
 
+    fn test_wav_bytes(samples: &[f32]) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+            for sample in samples {
+                writer.write_sample((sample * i16::MAX as f32) as i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        cursor.into_inner()
+    }
+
     fn wav_sample_count(bytes: &[u8]) -> usize {
         let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
         reader.samples::<i16>().count()
+    }
+
+    fn wav_peak(bytes: &[u8]) -> f32 {
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
+        reader
+            .samples::<i16>()
+            .map(|sample| (sample.unwrap() as f32 / i16::MAX as f32).abs())
+            .fold(0.0_f32, f32::max)
     }
 }
