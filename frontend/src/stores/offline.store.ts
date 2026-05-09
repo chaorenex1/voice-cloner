@@ -7,6 +7,7 @@ import {
   createOfflineTextJob,
   deleteOfflineJob,
   downloadOfflineJob,
+  listOfflineTtsEmotions,
   listenOfflineJobPreviewFinished,
   listenOfflineJobUpdated,
   listOfflineJobs,
@@ -16,7 +17,7 @@ import {
   toggleOfflineJobPreview,
 } from '../services/tauri/offline';
 import { listVoices } from '../services/tauri/voice-library';
-import type { OfflineInputType, OfflineJob, RuntimeParams } from '../utils/types/offline';
+import type { OfflineInputType, OfflineJob, RuntimeParams, TtsEmotionOption } from '../utils/types/offline';
 import type { VoiceSummary } from '../utils/types/voice';
 
 export interface OfflineParamState {
@@ -30,8 +31,10 @@ export interface OfflineState {
   text: string;
   selectedFile: File | null;
   selectedVoiceName: string | null;
+  selectedEmotionLabel: string | null;
   outputFormat: 'wav';
   params: OfflineParamState;
+  emotionOptions: TtsEmotionOption[];
   voices: VoiceSummary[];
   jobs: OfflineJob[];
   currentJob: OfflineJob | null;
@@ -60,12 +63,14 @@ const state = reactive<OfflineState>({
   text: '',
   selectedFile: null,
   selectedVoiceName: null,
+  selectedEmotionLabel: null,
   outputFormat: 'wav',
   params: {
     pitchRate: 0,
     speechRate: 0,
     volume: 50,
   },
+  emotionOptions: [],
   voices: [],
   jobs: [],
   currentJob: null,
@@ -80,11 +85,15 @@ const MAX_AUDIO_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT_LENGTH = 1200;
 
 function runtimeParams(): RuntimeParams {
+  const selectedEmotion = state.emotionOptions.find(
+    (emotion) => emotion.label === state.selectedEmotionLabel
+  );
   return {
     values: {
       pitchRate: state.params.pitchRate,
       speechRate: state.params.speechRate,
       volume: state.params.volume,
+      ...(selectedEmotion ? { prompt: selectedEmotion.prompt } : {}),
     },
   };
 }
@@ -180,6 +189,9 @@ export function useOfflineStore() {
   const selectedVoice = computed(() =>
     state.voices.find((voice) => voice.voiceName === state.selectedVoiceName)
   );
+  const selectedEmotion = computed(() =>
+    state.emotionOptions.find((emotion) => emotion.label === state.selectedEmotionLabel)
+  );
 
   const canSubmit = computed(() => !state.busy && validateBeforeSubmit() === null);
 
@@ -209,19 +221,30 @@ export function useOfflineStore() {
     state.loading = true;
     state.lastError = null;
     try {
-      const [voices, jobs] = await Promise.all([
+      const [voices, jobs, emotionOptions] = await Promise.all([
         listVoices().catch(() => demoVoices),
         listOfflineJobs().catch(() => []),
+        listOfflineTtsEmotions().catch(() => ({
+          supportsEmotionControl: false,
+          emotions: [],
+        })),
       ]);
       state.voices = voices.length > 0 ? voices : demoVoices;
       state.jobs = jobs;
+      state.emotionOptions = emotionOptions.supportsEmotionControl ? emotionOptions.emotions : [];
       state.currentJob = jobs[0] ?? null;
+      if (
+        state.selectedEmotionLabel &&
+        !state.emotionOptions.some((emotion) => emotion.label === state.selectedEmotionLabel)
+      ) {
+        state.selectedEmotionLabel = null;
+      }
       state.selectedVoiceName =
         state.selectedVoiceName &&
         state.voices.some((voice) => voice.voiceName === state.selectedVoiceName)
           ? state.selectedVoiceName
           : (state.voices[0]?.voiceName ?? null);
-      state.lastMessage = `已加载 ${state.voices.length} 个音色和 ${state.jobs.length} 条离线记录`;
+      state.lastMessage = `已加载 ${state.voices.length} 个音色、${state.emotionOptions.length} 个情感指令和 ${state.jobs.length} 条离线记录`;
     } catch (error) {
       state.lastError = messageFromError(error);
       state.lastMessage = '离线工作台加载失败';
@@ -417,6 +440,7 @@ export function useOfflineStore() {
   return {
     state,
     selectedVoice,
+    selectedEmotion,
     canSubmit,
     completedJobs,
     load,

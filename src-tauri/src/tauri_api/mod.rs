@@ -13,8 +13,8 @@ pub use audio_commands::{
 };
 pub use offline_commands::{
     cancel_offline_job, clear_offline_jobs, complete_offline_job, create_offline_audio_job, create_offline_text_job,
-    delete_offline_job, download_offline_job, fail_offline_job, get_offline_job, list_offline_jobs, retry_offline_job,
-    start_offline_job,
+    delete_offline_job, download_offline_job, fail_offline_job, get_offline_job, list_offline_jobs,
+    list_offline_tts_emotions, retry_offline_job, start_offline_job,
 };
 pub use realtime_commands::{
     create_realtime_session, fail_realtime_session, get_realtime_session, get_realtime_stream_snapshot,

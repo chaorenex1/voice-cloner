@@ -6,6 +6,7 @@ use crate::{
         error::{ApiError, ApiResult},
         state::AppState,
     },
+    clients::funspeech::tts::{list_tts_emotions, TtsEmotionOptions},
     domain::offline_job::OfflineJob,
     services::offline_job_manager::{
         CompleteOfflineJobRequest, CreateOfflineAudioJobRequest, CreateOfflineTextJobRequest, FailOfflineJobRequest,
@@ -34,6 +35,12 @@ pub struct OfflineJobDeleteResult {
 #[serde(rename_all = "camelCase")]
 pub struct OfflineJobDownloadResult {
     pub target_path: String,
+}
+
+#[tauri::command]
+pub fn list_offline_tts_emotions(state: State<'_, AppState>) -> ApiResult<TtsEmotionOptions> {
+    let settings = state.settings().load_or_default().map_err(ApiError::from)?;
+    list_tts_emotions(&settings.backend.tts).map_err(Into::into)
 }
 
 #[tauri::command]

@@ -174,6 +174,20 @@ function stageLabel(stage: string): string {
             />
             <span>{{ offline.state.params.volume }}</span>
           </label>
+          <label class="emotion-select">
+            情感指令
+            <select v-model="offline.state.selectedEmotionLabel">
+              <option :value="null">不使用情感指令</option>
+              <option
+                v-for="emotion in offline.state.emotionOptions"
+                :key="emotion.id"
+                :value="emotion.label"
+              >
+                {{ emotion.label }}
+              </option>
+            </select>
+            <span>{{ offline.selectedEmotion.value?.label ?? '默认' }}</span>
+          </label>
         </div>
 
         <button
@@ -531,7 +545,7 @@ select {
 
 .offline-param-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 14px;
   margin-top: 18px;
 }

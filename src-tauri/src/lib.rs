@@ -64,6 +64,7 @@ pub fn run() {
             tauri_api::realtime_commands::list_realtime_stream_snapshots,
             tauri_api::offline_commands::create_offline_audio_job,
             tauri_api::offline_commands::create_offline_text_job,
+            tauri_api::offline_commands::list_offline_tts_emotions,
             tauri_api::offline_commands::start_offline_job,
             tauri_api::offline_commands::cancel_offline_job,
             tauri_api::offline_commands::retry_offline_job,

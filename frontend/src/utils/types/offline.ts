@@ -6,6 +6,17 @@ export interface RuntimeParams {
   values: Record<string, unknown>;
 }
 
+export interface TtsEmotionOption {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+export interface TtsEmotionOptions {
+  supportsEmotionControl: boolean;
+  emotions: TtsEmotionOption[];
+}
+
 export interface OfflineJob {
   jobId: string;
   traceId: string;

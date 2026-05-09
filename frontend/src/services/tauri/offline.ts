@@ -2,6 +2,7 @@ import type {
   CreateOfflineAudioJobRequest,
   CreateOfflineTextJobRequest,
   OfflineJob,
+  TtsEmotionOptions,
 } from '../../utils/types/offline';
 import { listen } from '@tauri-apps/api/event';
 import { invokeWithMockFallback } from './invoke';
@@ -31,6 +32,23 @@ function mockJob(patch: Partial<OfflineJob>): OfflineJob {
     updatedAt: now,
     ...patch,
   };
+}
+
+const fallbackTtsEmotions: TtsEmotionOptions = {
+  supportsEmotionControl: true,
+  emotions: [
+    { id: 'neutral', label: '自然平静', prompt: '请用自然平静的语气说这句话。' },
+    { id: 'happy', label: '开心愉悦', prompt: '请用开心、愉悦的语气说这句话。' },
+    { id: 'sad', label: '伤心低落', prompt: '请用伤心、低落的语气说这句话。' },
+    { id: 'angry', label: '生气强烈', prompt: '请用生气、强烈的语气说这句话。' },
+    { id: 'fearful', label: '害怕紧张', prompt: '请用害怕、紧张的语气说这句话。' },
+    { id: 'disgusted', label: '厌恶不满', prompt: '请用厌恶、不满的语气说这句话。' },
+    { id: 'surprised', label: '惊讶意外', prompt: '请用惊讶、意外的语气说这句话。' },
+  ],
+};
+
+export async function listOfflineTtsEmotions(): Promise<TtsEmotionOptions> {
+  return invokeWithMockFallback('list_offline_tts_emotions', () => fallbackTtsEmotions);
 }
 
 export async function createOfflineAudioJob(

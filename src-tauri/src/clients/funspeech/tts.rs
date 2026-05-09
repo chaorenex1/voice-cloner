@@ -46,6 +46,23 @@ pub struct OfflineTtsResult {
     pub content_type: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsEmotionOption {
+    pub id: String,
+    pub label: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsEmotionOptions {
+    #[serde(default, alias = "supports_emotion_control")]
+    pub supports_emotion_control: bool,
+    #[serde(default)]
+    pub emotions: Vec<TtsEmotionOption>,
+}
+
 pub fn synthesize_text(config: &BackendConfig, request: OfflineTtsRequest) -> AppResult<OfflineTtsResult> {
     config.validate("backend.tts").map_err(AppError::invalid_settings)?;
     let text = request.text.trim();
@@ -66,6 +83,22 @@ pub fn synthesize_text(config: &BackendConfig, request: OfflineTtsRequest) -> Ap
     }
 
     Ok(result)
+}
+
+pub fn list_tts_emotions(config: &BackendConfig) -> AppResult<TtsEmotionOptions> {
+    config.validate("backend.tts").map_err(AppError::invalid_settings)?;
+    let endpoint = rest_url(&config.base_url, "/stream/v1/tts/emotions");
+    Client::builder()
+        .timeout(Duration::from_millis(config.timeout_ms))
+        .build()
+        .map_err(tts_http_error)?
+        .get(endpoint)
+        .send()
+        .map_err(tts_http_error)?
+        .error_for_status()
+        .map_err(tts_http_error)?
+        .json::<TtsEmotionOptions>()
+        .map_err(tts_http_error)
 }
 
 fn send_tts_request(
@@ -180,7 +213,7 @@ fn tts_http_error(error: reqwest::Error) -> AppError {
 mod tests {
     use crate::domain::settings::BackendConfig;
 
-    use super::{funspeech_tts_sample_rate, offline_tts_timeout_ms, RealtimeTtsEndpoint};
+    use super::{funspeech_tts_sample_rate, offline_tts_timeout_ms, RealtimeTtsEndpoint, TtsEmotionOptions};
 
     #[test]
     fn realtime_tts_endpoint_maps_http_base_to_ws_path() {
@@ -216,5 +249,24 @@ mod tests {
 
         config.timeout_ms = 600_000;
         assert_eq!(offline_tts_timeout_ms(&config), 600_000);
+    }
+
+    #[test]
+    fn tts_emotion_options_accept_funspeech_snake_case_contract() {
+        let options: TtsEmotionOptions = serde_json::from_value(serde_json::json!({
+            "supports_emotion_control": true,
+            "emotions": [
+                {
+                    "id": "happy",
+                    "label": "开心愉悦",
+                    "prompt": "请用开心、愉悦的语气说这句话。"
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert!(options.supports_emotion_control);
+        assert_eq!(options.emotions[0].label, "开心愉悦");
+        assert_eq!(options.emotions[0].prompt, "请用开心、愉悦的语气说这句话。");
     }
 }
