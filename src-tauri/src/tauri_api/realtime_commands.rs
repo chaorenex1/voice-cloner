@@ -9,8 +9,7 @@ use crate::{
         frame::{PcmFormat, SampleFormat},
         virtual_mic::VirtualMicAdapter,
     },
-    clients::funspeech::{asr::RealtimeAsrEndpoint, tts::RealtimeTtsEndpoint},
-    domain::{session::RealtimeSession, settings::RealtimeVoiceMode},
+    domain::session::RealtimeSession,
     services::realtime_stream_manager::{RealtimeStreamMode, RealtimeStreamSnapshot},
     services::session_manager::{
         CreateRealtimeSessionRequest, SwitchRealtimeVoiceRequest, UpdateRealtimeParamsRequest,
@@ -62,8 +61,6 @@ pub async fn start_realtime_session(state: State<'_, AppState>, session_id: Stri
         state
             .virtual_mic()
             .set_target_device_id(settings.device.virtual_mic_device_id.clone());
-        state.virtual_mic().start(format).map_err(ApiError::from)?;
-        tracing::debug!(%session_id, "virtual mic started for realtime session");
     }
 
     let started = state
@@ -75,39 +72,15 @@ pub async fn start_realtime_session(state: State<'_, AppState>, session_id: Stri
         let _ = state.virtual_mic().stop();
     }
     let session = started?;
-    let input_device = match state
-        .audio_devices()
-        .input_device_by_id(settings.device.input_device_id.as_deref())
-    {
-        Ok(device) => device,
-        Err(error) => {
-            tracing::warn!(%session_id, %error, "failed to resolve realtime input device");
-            let _ = state
-                .sessions()
-                .mark_realtime_session_failed(&session_id, error.to_string(), state.audio_engine());
-            let _ = state.virtual_mic().stop();
-            return Err(ApiError::from(error));
-        }
-    };
     if let Err(error) = state
         .realtime_streams()
         .start(
             session.clone(),
             format,
-            Some(input_device),
+            None,
             state.virtual_mic_handle(),
             settings.device.virtual_mic_enabled,
-            match settings.runtime.realtime_voice_mode {
-                RealtimeVoiceMode::RealtimeVoice => RealtimeStreamMode::RealtimeVoice,
-                RealtimeVoiceMode::AsrTts => {
-                    let asr = RealtimeAsrEndpoint::from_backend_config(&settings.backend.asr);
-                    let tts = RealtimeTtsEndpoint::from_backend_config(&settings.backend.tts);
-                    RealtimeStreamMode::AsrTts {
-                        asr_url: asr.websocket_url,
-                        tts_url: tts.websocket_url,
-                    }
-                }
-            },
+            RealtimeStreamMode::RealtimeVoice,
         )
         .await
     {
@@ -125,6 +98,81 @@ pub async fn start_realtime_session(state: State<'_, AppState>, session_id: Stri
         "start realtime session completed"
     );
     Ok(session)
+}
+
+#[tauri::command]
+pub fn start_realtime_input(state: State<'_, AppState>, session_id: String) -> ApiResult<RealtimeStreamSnapshot> {
+    tracing::debug!(%session_id, "start realtime input requested");
+    let settings = state.settings().load_or_default().map_err(ApiError::from)?;
+    let format = PcmFormat {
+        sample_rate: settings.runtime.default_sample_rate,
+        frame_ms: settings.runtime.audio_frame_ms,
+        sample_format: SampleFormat::I16,
+        ..PcmFormat::default()
+    };
+    if settings.device.virtual_mic_enabled {
+        state
+            .virtual_mic()
+            .set_target_device_id(settings.device.virtual_mic_device_id.clone());
+        state.virtual_mic().start(format).map_err(ApiError::from)?;
+    }
+    let input_device = state
+        .audio_devices()
+        .input_device_by_id(settings.device.input_device_id.as_deref())
+        .map_err(ApiError::from)?;
+    if let Err(error) = state.realtime_streams().start_input(&session_id, input_device) {
+        let _ = state.virtual_mic().stop();
+        return Err(ApiError::from(error));
+    }
+    state
+        .realtime_streams()
+        .get_snapshot(&session_id)
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub fn stop_realtime_input(state: State<'_, AppState>, session_id: String) -> ApiResult<RealtimeStreamSnapshot> {
+    tracing::debug!(%session_id, "stop realtime input requested");
+    state
+        .realtime_streams()
+        .stop_input(&session_id)
+        .map_err(ApiError::from)?;
+    let _ = state.virtual_mic().stop();
+    state
+        .realtime_streams()
+        .get_snapshot(&session_id)
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub fn start_realtime_monitor(state: State<'_, AppState>, session_id: String) -> ApiResult<RealtimeStreamSnapshot> {
+    tracing::debug!(%session_id, "start realtime monitor requested");
+    let settings = state.settings().load_or_default().map_err(ApiError::from)?;
+    let output_device = state
+        .audio_devices()
+        .output_device_by_id(settings.device.output_device_id.as_deref())
+        .map_err(ApiError::from)?;
+    state
+        .realtime_streams()
+        .start_monitor(&session_id, output_device)
+        .map_err(ApiError::from)?;
+    state
+        .realtime_streams()
+        .get_snapshot(&session_id)
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub fn stop_realtime_monitor(state: State<'_, AppState>, session_id: String) -> ApiResult<RealtimeStreamSnapshot> {
+    tracing::debug!(%session_id, "stop realtime monitor requested");
+    state
+        .realtime_streams()
+        .stop_monitor(&session_id)
+        .map_err(ApiError::from)?;
+    state
+        .realtime_streams()
+        .get_snapshot(&session_id)
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]

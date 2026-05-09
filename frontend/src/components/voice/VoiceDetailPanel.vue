@@ -26,7 +26,7 @@ const savingVoice = computed(() => props.operation === 'savingVoice');
 </script>
 
 <template>
-  <section class="voice-stage" aria-label="当前音色舞台">
+  <section class="voice-stage" aria-label="音色详情舞台">
     <div v-if="detail" class="voice-detail">
       <div class="voice-visual">
         <div class="wave-orb">
@@ -44,7 +44,7 @@ const savingVoice = computed(() => props.operation === 'savingVoice');
 
       <div class="detail-header">
         <div>
-          <p class="module-eyebrow">当前音色舞台</p>
+          <p class="module-eyebrow">音色详情舞台</p>
           <h3>{{ detail.displayName }}</h3>
           <span class="sync-badge" :data-status="detail.syncStatus">
             {{ detail.syncStatus }}
@@ -136,13 +136,7 @@ const savingVoice = computed(() => props.operation === 'savingVoice');
         </div>
       </div>
 
-      <footer class="detail-status">
-        {{
-          detail.isCurrent
-            ? '当前音色已载入，可直接用于实时变声。'
-            : '选择“设为当前音色”后用于实时变声。'
-        }}
-      </footer>
+      <footer class="detail-status">音色资产已载入，可编辑、试听或同步到 FunSpeech。</footer>
     </div>
 
     <div v-else class="empty-state empty-state--large">

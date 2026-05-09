@@ -2,7 +2,7 @@ export type SettingsSection = 'devices' | 'backends';
 
 export type AudioDeviceKind = 'input' | 'output';
 
-export type RealtimeVoiceMode = 'realtimeVoice' | 'asrTts';
+export type RealtimeVoiceMode = 'realtimeVoice';
 
 export type BackendHealthStatus = 'idle' | 'checking' | 'ok' | 'warning' | 'error';
 
@@ -43,7 +43,6 @@ export interface BackendSettings {
 }
 
 export interface RuntimeSettings {
-  defaultVoiceName: string | null;
   defaultOutputFormat: string;
   defaultSampleRate: number;
   audioFrameMs: number;

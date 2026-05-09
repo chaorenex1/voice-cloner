@@ -16,7 +16,6 @@ const {
   attachReferenceAudio,
   recognizeReferenceAudio,
   saveSelectedVoice,
-  setCurrentVoice,
   createLocalVoice,
   removeSelectedVoice,
   previewVoice,
@@ -52,8 +51,6 @@ const operationTitle = computed(() => {
       return '正在创建音色';
     case 'deletingVoice':
       return '正在删除音色';
-    case 'settingCurrent':
-      return '正在设置当前音色';
     default:
       return '';
   }
@@ -266,7 +263,6 @@ async function refreshCloudRuntime(): Promise<void> {
         :playing-voice-name="state.playingVoiceName"
         @select="selectVoice"
         @preview="previewVoice"
-        @set-current="setCurrentVoice"
       />
 
       <VoiceDetailPanel

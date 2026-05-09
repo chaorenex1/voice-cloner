@@ -296,16 +296,17 @@ fn require_wav_file_name(value: &str) -> AppResult<()> {
 }
 
 fn sanitize_voice_name(value: &str) -> String {
-    value
-        .chars()
-        .filter_map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                Some(ch.to_ascii_lowercase())
-            } else {
-                None
-            }
-        })
-        .collect()
+    let mut safe_name = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            safe_name.push(ch.to_ascii_lowercase());
+        } else if ch.is_whitespace() {
+            continue;
+        } else {
+            safe_name.push_str(&format!("_x{:x}", ch as u32));
+        }
+    }
+    safe_name
 }
 
 #[cfg(test)]
@@ -392,6 +393,22 @@ mod tests {
         assert_eq!(updated.reference_text, "updated reference text");
         assert_eq!(updated.reference_audio_path, saved.reference_audio_path);
         assert!(std::path::PathBuf::from(updated.reference_audio_path).exists());
+    }
+
+    #[test]
+    fn voice_library_supports_non_ascii_voice_names_with_safe_file_segments() {
+        let library = library();
+        let mut profile = profile();
+        profile.voice_name = "中文女".into();
+
+        let saved = library.save_custom_voice(profile).unwrap();
+
+        assert_eq!(saved.voice_name, "中文女");
+        assert!(saved.reference_audio_path.ends_with("_x4e2d_x6587_x5973.wav"));
+        assert_eq!(
+            library.get_custom_voice("中文女").unwrap().voice_instruction,
+            "warm, calm"
+        );
     }
 
     #[test]

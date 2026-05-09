@@ -43,10 +43,25 @@ export interface RealtimeStreamSnapshot {
     rms: number;
     peak: number;
   };
+  inputState: string;
+  monitorState: string;
   virtualMicFrames: number;
+  monitorFrames: number;
   pipelineStage: string;
   asrText: string | null;
   ttsTextChunks: number;
   lastEvent: string | null;
+  protocolEvent: string | null;
+  lastPrompt: string | null;
+  eventSeq: number | null;
+  serverTsMs: number | null;
+  schemaVersion: string | null;
+  utteranceId: string | null;
+  hypothesisId: string | null;
+  revisionId: number | null;
+  ttsJobId: string | null;
+  audioChunkIndex: number | null;
+  configVersion: number | null;
+  backpressureHint: string | null;
   lastError: string | null;
 }

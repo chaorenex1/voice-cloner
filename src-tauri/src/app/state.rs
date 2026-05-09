@@ -6,9 +6,10 @@ use crate::{
         virtual_mic::SelectableVirtualMicAdapter,
     },
     services::{
-        asset_cache::AssetCache, offline_job_manager::OfflineJobManager, session_manager::SessionManager,
-        realtime_stream_manager::RealtimeStreamManager, settings_manager::SettingsManager,
-        voice_design_manager::VoiceDesignManager, voice_library::VoiceLibrary, voice_sync_manager::VoiceSyncManager,
+        asset_cache::AssetCache, offline_job_manager::OfflineJobManager,
+        realtime_stream_manager::RealtimeStreamManager, session_manager::SessionManager,
+        settings_manager::SettingsManager, voice_design_manager::VoiceDesignManager, voice_library::VoiceLibrary,
+        voice_sync_manager::VoiceSyncManager,
     },
     storage::app_paths::AppPaths,
 };

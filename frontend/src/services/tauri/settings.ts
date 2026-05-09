@@ -50,7 +50,6 @@ const mockSettings: AppSettings = {
     },
   },
   runtime: {
-    defaultVoiceName: null,
     defaultOutputFormat: 'wav',
     defaultSampleRate: 48000,
     audioFrameMs: 20,

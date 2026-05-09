@@ -13,7 +13,6 @@ export interface VoiceSummary {
   updatedAt: string;
   referenceTextPreview: string;
   syncStatus: VoiceSyncStatus;
-  isCurrent: boolean;
 }
 
 export interface VoiceDetail extends VoiceSummary {

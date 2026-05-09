@@ -54,7 +54,9 @@ export function summarizeRealtimeSession(session: RealtimeSession): Record<strin
   };
 }
 
-export function summarizeRealtimeSnapshot(snapshot: RealtimeStreamSnapshot): Record<string, unknown> {
+export function summarizeRealtimeSnapshot(
+  snapshot: RealtimeStreamSnapshot
+): Record<string, unknown> {
   return {
     sessionId: snapshot.sessionId,
     websocketState: snapshot.websocketState,
@@ -67,11 +69,20 @@ export function summarizeRealtimeSnapshot(snapshot: RealtimeStreamSnapshot): Rec
     receivedBytes: snapshot.receivedBytes,
     latencyMs: snapshot.latencyMs,
     inputLevel: snapshot.inputLevel,
+    inputState: snapshot.inputState,
+    monitorState: snapshot.monitorState,
     virtualMicFrames: snapshot.virtualMicFrames,
+    monitorFrames: snapshot.monitorFrames,
     pipelineStage: snapshot.pipelineStage,
     asrText: snapshot.asrText,
     ttsTextChunks: snapshot.ttsTextChunks,
     lastEvent: snapshot.lastEvent,
+    protocolEvent: snapshot.protocolEvent,
+    lastPrompt: snapshot.lastPrompt,
+    eventSeq: snapshot.eventSeq,
+    ttsJobId: snapshot.ttsJobId,
+    audioChunkIndex: snapshot.audioChunkIndex,
+    backpressureHint: snapshot.backpressureHint,
     lastError: snapshot.lastError,
   };
 }

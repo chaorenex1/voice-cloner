@@ -3,20 +3,17 @@ import type {
   AppSettings,
   BackendEndpointConfig,
   BackendSettings,
-  RuntimeSettings,
 } from '../../utils/types/settings';
 
 type BackendKey = keyof BackendSettings;
 
 defineProps<{
   settings: AppSettings['backend'] | null;
-  runtime: RuntimeSettings | null;
 }>();
 
 defineEmits<{
   update: [key: BackendKey, patch: Partial<BackendEndpointConfig>];
   updateFunSpeech: [patch: Partial<BackendEndpointConfig>];
-  updateRuntime: [patch: Partial<RuntimeSettings>];
   commit: [];
 }>();
 
@@ -39,26 +36,6 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
       </div>
 
       <div class="settings-form">
-        <label v-if="runtime" class="form-field form-field--wide">
-          <span>实时变声模式</span>
-          <select
-            :value="runtime.realtimeVoiceMode"
-            @change="
-              $emit('updateRuntime', {
-                realtimeVoiceMode: ($event.target as HTMLSelectElement)
-                  .value as RuntimeSettings['realtimeVoiceMode'],
-              })
-            "
-            @blur="$emit('commit')"
-          >
-            <option value="realtimeVoice">方案 A：FunSpeech Realtime Voice 直连</option>
-            <option value="asrTts">方案 B：本机编排 ASR -> TTS</option>
-          </select>
-          <small>
-            A 走 /ws/v1/realtime/voice；B 走 /ws/v1/asr + /ws/v1/tts，便于观察识别文本和合成回包。
-          </small>
-        </label>
-
         <label class="form-field">
           <span>Base URL</span>
           <input

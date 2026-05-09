@@ -6,7 +6,6 @@ import {
   listenVoicePreviewFinished,
   listVoices,
   saveVoiceDetail,
-  setCurrentVoiceName,
   stopVoicePreview,
   syncVoices,
   toggleVoicePreview,
@@ -31,7 +30,6 @@ export type VoiceLibraryOperation =
   | 'savingVoice'
   | 'creatingVoice'
   | 'deletingVoice'
-  | 'settingCurrent'
   | null;
 
 export interface VoiceLibraryState {
@@ -143,7 +141,6 @@ export function useVoiceLibraryStore() {
         (previousSelection && state.voices.some((voice) => voice.voiceName === previousSelection)
           ? previousSelection
           : null) ??
-        state.voices.find((voice) => voice.isCurrent)?.voiceName ??
         state.voices[0]?.voiceName ??
         null;
 
@@ -261,25 +258,6 @@ export function useVoiceLibraryStore() {
     }
   }
 
-  async function setCurrentVoice(voiceName: string): Promise<void> {
-    state.operation = 'settingCurrent';
-    try {
-      await setCurrentVoiceName(voiceName);
-      state.voices = state.voices.map((voice) => ({
-        ...voice,
-        isCurrent: voice.voiceName === voiceName,
-      }));
-
-      if (state.detail) {
-        updateDetail({ isCurrent: state.detail.voiceName === voiceName });
-      }
-
-      state.lastMessage = '当前音色已保存到本地设置';
-    } finally {
-      state.operation = null;
-    }
-  }
-
   async function previewVoice(voiceName?: string): Promise<void> {
     const target = voiceName ?? state.detail?.voiceName;
     if (!target) {
@@ -320,7 +298,6 @@ export function useVoiceLibraryStore() {
     attachReferenceAudio,
     recognizeReferenceAudio,
     saveSelectedVoice,
-    setCurrentVoice,
     createLocalVoice,
     removeSelectedVoice,
     previewVoice,

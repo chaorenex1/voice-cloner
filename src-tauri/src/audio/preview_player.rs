@@ -1,17 +1,17 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Sender},
+        Arc, Mutex,
     },
     thread,
     time::Duration,
 };
 
 use cpal::{
-    SampleFormat, StreamConfig,
     traits::{DeviceTrait, StreamTrait},
+    SampleFormat, StreamConfig,
 };
 use serde::Serialize;
 

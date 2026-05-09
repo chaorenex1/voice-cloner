@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{mpsc as std_mpsc, Arc, RwLock},
+    sync::{mpsc as std_mpsc, Arc, Mutex, RwLock},
     thread,
     time::{Duration, Instant},
 };
@@ -41,11 +41,26 @@ pub struct RealtimeStreamSnapshot {
     pub received_bytes: u64,
     pub latency_ms: Option<u64>,
     pub input_level: AudioLevel,
+    pub input_state: String,
+    pub monitor_state: String,
     pub virtual_mic_frames: u64,
+    pub monitor_frames: u64,
     pub pipeline_stage: String,
     pub asr_text: Option<String>,
     pub tts_text_chunks: u64,
     pub last_event: Option<String>,
+    pub protocol_event: Option<String>,
+    pub last_prompt: Option<String>,
+    pub event_seq: Option<u64>,
+    pub server_ts_ms: Option<i64>,
+    pub schema_version: Option<String>,
+    pub utterance_id: Option<String>,
+    pub hypothesis_id: Option<String>,
+    pub revision_id: Option<u64>,
+    pub tts_job_id: Option<String>,
+    pub audio_chunk_index: Option<u64>,
+    pub config_version: Option<u64>,
+    pub backpressure_hint: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -64,11 +79,26 @@ impl RealtimeStreamSnapshot {
             received_bytes: 0,
             latency_ms: None,
             input_level: AudioLevel { rms: 0.0, peak: 0.0 },
+            input_state: "off".into(),
+            monitor_state: "off".into(),
             virtual_mic_frames: 0,
+            monitor_frames: 0,
             pipeline_stage: "connecting".into(),
             asr_text: None,
             tts_text_chunks: 0,
             last_event: None,
+            protocol_event: None,
+            last_prompt: None,
+            event_seq: None,
+            server_ts_ms: None,
+            schema_version: None,
+            utterance_id: None,
+            hypothesis_id: None,
+            revision_id: None,
+            tts_job_id: None,
+            audio_chunk_index: None,
+            config_version: None,
+            backpressure_hint: None,
             last_error: None,
         }
     }
@@ -89,11 +119,28 @@ impl RealtimeStreamMode {
     }
 }
 
-#[derive(Debug)]
 enum RealtimeControl {
+    StartInput(cpal::Device),
+    StopInput,
+    StartMonitor(cpal::Device),
+    StopMonitor,
     UpdateParams(RuntimeParams),
     SwitchVoice(String),
     Stop,
+}
+
+impl RealtimeControl {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::StartInput(_) => "start_input",
+            Self::StopInput => "stop_input",
+            Self::StartMonitor(_) => "start_monitor",
+            Self::StopMonitor => "stop_monitor",
+            Self::UpdateParams(_) => "update_params",
+            Self::SwitchVoice(_) => "switch_voice",
+            Self::Stop => "stop",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -234,6 +281,38 @@ impl RealtimeStreamManager {
         self.send_control(session_id, RealtimeControl::SwitchVoice(voice_name))
     }
 
+    pub fn start_input(&self, session_id: &str, device: cpal::Device) -> AppResult<()> {
+        self.patch_and_send_control(
+            session_id,
+            |state| state.input_state = "starting".into(),
+            RealtimeControl::StartInput(device),
+        )
+    }
+
+    pub fn stop_input(&self, session_id: &str) -> AppResult<()> {
+        self.patch_and_send_control(
+            session_id,
+            |state| state.input_state = "stopping".into(),
+            RealtimeControl::StopInput,
+        )
+    }
+
+    pub fn start_monitor(&self, session_id: &str, device: cpal::Device) -> AppResult<()> {
+        self.patch_and_send_control(
+            session_id,
+            |state| state.monitor_state = "starting".into(),
+            RealtimeControl::StartMonitor(device),
+        )
+    }
+
+    pub fn stop_monitor(&self, session_id: &str) -> AppResult<()> {
+        self.patch_and_send_control(
+            session_id,
+            |state| state.monitor_state = "stopping".into(),
+            RealtimeControl::StopMonitor,
+        )
+    }
+
     pub fn get_snapshot(&self, session_id: &str) -> AppResult<RealtimeStreamSnapshot> {
         let streams = self.streams.read().expect("realtime stream manager lock poisoned");
         streams
@@ -252,11 +331,29 @@ impl RealtimeStreamManager {
     }
 
     fn send_control(&self, session_id: &str, control: RealtimeControl) -> AppResult<()> {
-        tracing::debug!(%session_id, ?control, "sending realtime stream control");
+        tracing::debug!(%session_id, control = control.label(), "sending realtime stream control");
         let streams = self.streams.read().expect("realtime stream manager lock poisoned");
         let handle = streams
             .get(session_id)
             .ok_or_else(|| AppError::realtime_session(format!("realtime stream not found: {session_id}")))?;
+        handle
+            .control
+            .send(control)
+            .map_err(|_| AppError::realtime_session("realtime stream control channel is closed"))
+    }
+
+    fn patch_and_send_control(
+        &self,
+        session_id: &str,
+        patch: impl FnOnce(&mut RealtimeStreamSnapshot),
+        control: RealtimeControl,
+    ) -> AppResult<()> {
+        tracing::debug!(%session_id, control = control.label(), "sending realtime stream control");
+        let streams = self.streams.read().expect("realtime stream manager lock poisoned");
+        let handle = streams
+            .get(session_id)
+            .ok_or_else(|| AppError::realtime_session(format!("realtime stream not found: {session_id}")))?;
+        patch_snapshot(&handle.snapshot, patch);
         handle
             .control
             .send(control)
@@ -293,6 +390,21 @@ async fn run_realtime_voice_stream(
             "FunSpeech websocket connected"
         );
         let (mut write, mut read) = websocket.split();
+
+        let started = read_json_event(&mut read).await?;
+        tracing::debug!(
+            session_id = %session.session_id,
+            trace_id = %session.trace_id,
+            event = ?event_name(&started),
+            payload = %started,
+            "FunSpeech realtime event received"
+        );
+        patch_snapshot(&snapshot, |state| apply_json_event(state, &started));
+        if event_name(&started) != Some("session_started") {
+            return Err(AppError::realtime_session(format!(
+                "expected session_started from FunSpeech, got {started}"
+            )));
+        }
 
         let configure = json!({
             "event": "configure",
@@ -331,7 +443,7 @@ async fn run_realtime_voice_stream(
             );
             patch_snapshot(&snapshot, |state| apply_json_event(state, &event));
             match event_name(&event) {
-                Some("configured" | "ready" | "session_started") => {
+                Some("configured" | "ready") => {
                     accepted = true;
                     break;
                 }
@@ -360,22 +472,15 @@ async fn run_realtime_voice_stream(
         }
 
         let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<RealtimeAudioChunk>();
-        let _input_stop = if let Some(device) = input_device {
+        let mut input_stop: Option<std_mpsc::Sender<()>> = None;
+        let mut monitor_output: Option<RealtimeMonitorPlayer> = None;
+        if input_device.is_some() {
             tracing::debug!(
                 session_id = %session.session_id,
                 trace_id = %session.trace_id,
-                "starting realtime input capture thread"
+                "realtime input device is available but capture waits for StartInput control"
             );
-            Some(spawn_input_thread(device, audio_tx.clone(), funspeech_format)?)
-        } else {
-            tracing::debug!(
-                session_id = %session.session_id,
-                trace_id = %session.trace_id,
-                "no input device resolved; using silence source"
-            );
-            spawn_silence_source(audio_tx.clone(), funspeech_format);
-            None
-        };
+        }
         let frame_samples = vec![0.0; format.samples_per_frame()];
         let mut sequence = 0_u64;
         let mut pending_sends = VecDeque::<Instant>::new();
@@ -406,6 +511,66 @@ async fn run_realtime_voice_stream(
                 }
                 Some(control) = control_rx.recv() => {
                     match control {
+                        RealtimeControl::StartInput(device) => {
+                            if input_stop.is_none() {
+                                match spawn_input_thread(device, audio_tx.clone(), funspeech_format) {
+                                    Ok(stop) => {
+                                        input_stop = Some(stop);
+                                        patch_snapshot(&snapshot, |state| {
+                                            state.input_state = "capturing".into();
+                                            state.pipeline_stage = "realtime_input_capturing".into();
+                                            state.last_event = Some("input_started".into());
+                                            state.last_error = None;
+                                        });
+                                    }
+                                    Err(error) => {
+                                        patch_snapshot(&snapshot, |state| {
+                                            state.input_state = "error".into();
+                                            state.last_error = Some(error.to_string());
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        RealtimeControl::StopInput => {
+                            if let Some(stop) = input_stop.take() {
+                                let _ = stop.send(());
+                            }
+                            patch_snapshot(&snapshot, |state| {
+                                state.input_state = "off".into();
+                                state.pipeline_stage = "realtime_voice_ready".into();
+                                state.last_event = Some("input_stopped".into());
+                            });
+                        }
+                        RealtimeControl::StartMonitor(device) => {
+                            if monitor_output.is_none() {
+                                match RealtimeMonitorPlayer::start(device, format) {
+                                    Ok(output) => {
+                                        monitor_output = Some(output);
+                                        patch_snapshot(&snapshot, |state| {
+                                            state.monitor_state = "listening".into();
+                                            state.last_event = Some("monitor_started".into());
+                                            state.last_error = None;
+                                        });
+                                    }
+                                    Err(error) => {
+                                        patch_snapshot(&snapshot, |state| {
+                                            state.monitor_state = "error".into();
+                                            state.last_error = Some(error.to_string());
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        RealtimeControl::StopMonitor => {
+                            if let Some(output) = monitor_output.take() {
+                                output.stop();
+                            }
+                            patch_snapshot(&snapshot, |state| {
+                                state.monitor_state = "off".into();
+                                state.last_event = Some("monitor_stopped".into());
+                            });
+                        }
                         RealtimeControl::UpdateParams(runtime_params) => {
                             let message = json!({
                                 "event": "update",
@@ -437,6 +602,12 @@ async fn run_realtime_voice_stream(
                             );
                         }
                         RealtimeControl::Stop => {
+                            if let Some(stop) = input_stop.take() {
+                                let _ = stop.send(());
+                            }
+                            if let Some(output) = monitor_output.take() {
+                                output.stop();
+                            }
                             let _ = write
                                 .send(Message::Text(json!({"event": "stop", "type": "stop"}).to_string()))
                                 .await;
@@ -447,6 +618,8 @@ async fn run_realtime_voice_stream(
                             );
                             patch_snapshot(&snapshot, |state| {
                                 state.websocket_state = "stopping".into();
+                                state.input_state = "off".into();
+                                state.monitor_state = "off".into();
                                 state.last_event = Some("stop_requested".into());
                             });
                             break;
@@ -479,11 +652,19 @@ async fn run_realtime_voice_stream(
                             } else {
                                 Ok(())
                             };
+                            let monitor_written = monitor_output
+                                .as_ref()
+                                .map(|output| output.push_frame(&frame))
+                                .unwrap_or(false);
                             patch_snapshot(&snapshot, |state| {
                                 state.received_frames += 1;
                                 state.received_bytes += bytes.len() as u64;
                                 state.latency_ms = latency_ms;
                                 state.pipeline_stage = "realtime_voice_received_audio".into();
+                                state.last_prompt = Some("正在输出转换后语音".into());
+                                if monitor_written {
+                                    state.monitor_frames += 1;
+                                }
                                 if write_virtual_mic && virtual_mic_result.is_ok() {
                                     state.virtual_mic_frames += 1;
                                 } else if let Err(error) = &virtual_mic_result {
@@ -514,6 +695,12 @@ async fn run_realtime_voice_stream(
                                         "FunSpeech realtime event received"
                                     );
                                     patch_snapshot(&snapshot, |state| apply_json_event(state, &value));
+                                    if matches!(event_name(&value), Some("error" | "session.error")) {
+                                        return Err(AppError::realtime_session(format!(
+                                            "FunSpeech realtime error: {}",
+                                            realtime_event_message(&value)
+                                        )));
+                                    }
                                     if event_name(&value) == Some("session_completed") {
                                         break;
                                     }
@@ -555,6 +742,8 @@ async fn run_realtime_voice_stream(
             if state.websocket_state != "closed" {
                 state.websocket_state = "stopped".into();
             }
+            state.input_state = "off".into();
+            state.monitor_state = "off".into();
         });
         tracing::debug!(
             session_id = %session.session_id,
@@ -681,6 +870,31 @@ async fn run_asr_tts_stream(
                 }
                 Some(control) = control_rx.recv() => {
                     match control {
+                        RealtimeControl::StartInput(_) => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.last_event = Some("asr_tts_dynamic_input_ignored".into());
+                                state.last_error = Some(
+                                    "ASR->TTS standalone pipeline keeps input fixed for the current session".into(),
+                                );
+                            });
+                        }
+                        RealtimeControl::StopInput => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.last_event = Some("asr_tts_dynamic_input_ignored".into());
+                                state.last_error = Some(
+                                    "ASR->TTS standalone pipeline stops input when the session stops".into(),
+                                );
+                            });
+                        }
+                        RealtimeControl::StartMonitor(_) | RealtimeControl::StopMonitor => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.monitor_state = "off".into();
+                                state.last_event = Some("asr_tts_monitor_ignored".into());
+                                state.last_error = Some(
+                                    "ASR->TTS standalone pipeline does not own realtime monitor output".into(),
+                                );
+                            });
+                        }
                         RealtimeControl::UpdateParams(runtime_params) => {
                             patch_snapshot(&snapshot, |state| {
                                 state.last_event = Some("tts_parameters_update_ignored".into());
@@ -958,6 +1172,47 @@ fn json_string(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+fn json_u64(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(Value::as_u64)
+}
+
+fn json_i64(value: &Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(Value::as_i64)
+}
+
+fn payload_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get("payload")
+        .and_then(|payload| payload.get(key))
+        .and_then(Value::as_str)
+        .or_else(|| value.get(key).and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn payload_u64(value: &Value, key: &str) -> Option<u64> {
+    value
+        .get("payload")
+        .and_then(|payload| payload.get(key))
+        .and_then(Value::as_u64)
+        .or_else(|| value.get(key).and_then(Value::as_u64))
+}
+
+fn payload_bool(value: &Value, key: &str) -> Option<bool> {
+    value
+        .get("payload")
+        .and_then(|payload| payload.get(key))
+        .and_then(Value::as_bool)
+        .or_else(|| value.get(key).and_then(Value::as_bool))
+}
+
+fn protocol_event_name(value: &Value) -> Option<String> {
+    payload_string(value, "protocol_event")
+}
+
+fn realtime_event_message(value: &Value) -> String {
+    payload_string(value, "message").unwrap_or_else(|| value.to_string())
+}
+
 async fn read_json_event<S>(read: &mut S) -> AppResult<Value>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
@@ -986,6 +1241,197 @@ fn silent_pcm_i16_frame(format: PcmFormat) -> Vec<u8> {
 struct RealtimeAudioChunk {
     bytes: Vec<u8>,
     level: AudioLevel,
+}
+
+enum RealtimeMonitorCommand {
+    Frame { samples: Vec<f32>, source_sample_rate: u32 },
+    Stop,
+}
+
+struct RealtimeMonitorPlayer {
+    tx: std_mpsc::Sender<RealtimeMonitorCommand>,
+}
+
+impl RealtimeMonitorPlayer {
+    fn start(device: cpal::Device, source_format: PcmFormat) -> AppResult<Self> {
+        let (tx, rx) = std_mpsc::channel::<RealtimeMonitorCommand>();
+        let (ready_tx, ready_rx) = std_mpsc::channel::<AppResult<()>>();
+        thread::Builder::new()
+            .name("realtime-monitor-output".into())
+            .spawn(move || {
+                let mut output = match RealtimeMonitorOutput::start(device, source_format) {
+                    Ok(output) => {
+                        let _ = ready_tx.send(Ok(()));
+                        output
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
+                };
+
+                while let Ok(command) = rx.recv() {
+                    match command {
+                        RealtimeMonitorCommand::Frame {
+                            samples,
+                            source_sample_rate,
+                        } => output.push_samples(&samples, source_sample_rate),
+                        RealtimeMonitorCommand::Stop => break,
+                    }
+                }
+            })
+            .map_err(|source| AppError::io("starting realtime monitor output thread", source))?;
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| AppError::audio("realtime monitor output stream did not start"))??;
+        Ok(Self { tx })
+    }
+
+    fn push_frame(&self, frame: &AudioFrame) -> bool {
+        self.tx
+            .send(RealtimeMonitorCommand::Frame {
+                samples: frame.samples.clone(),
+                source_sample_rate: frame.format.sample_rate,
+            })
+            .is_ok()
+    }
+
+    fn stop(self) {
+        let _ = self.tx.send(RealtimeMonitorCommand::Stop);
+    }
+}
+
+struct RealtimeMonitorOutput {
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    output_sample_rate: u32,
+    _stream: cpal::Stream,
+}
+
+impl RealtimeMonitorOutput {
+    fn start(device: cpal::Device, source_format: PcmFormat) -> AppResult<Self> {
+        let supported_config = device
+            .default_output_config()
+            .map_err(|error| AppError::audio(error.to_string()))?;
+        let sample_format = supported_config.sample_format();
+        let stream_config: StreamConfig = supported_config.into();
+        let output_channels = stream_config.channels.max(1) as usize;
+        let output_sample_rate = stream_config.sample_rate.0;
+        let buffer = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+        let stream = build_monitor_stream(
+            &device,
+            &stream_config,
+            sample_format,
+            output_channels,
+            Arc::clone(&buffer),
+        )?;
+        stream.play().map_err(|error| AppError::audio(error.to_string()))?;
+        tracing::debug!(
+            source_sample_rate = source_format.sample_rate,
+            output_sample_rate,
+            output_channels,
+            "realtime monitor output started"
+        );
+        Ok(Self {
+            buffer,
+            output_sample_rate,
+            _stream: stream,
+        })
+    }
+
+    fn push_samples(&mut self, samples: &[f32], source_sample_rate: u32) {
+        let samples = resample_samples_linear(samples, source_sample_rate, self.output_sample_rate);
+        if samples.is_empty() {
+            return;
+        }
+        let max_buffered_samples = self.output_sample_rate as usize * 4;
+        let mut buffer = self.buffer.lock().expect("realtime monitor buffer lock poisoned");
+        while buffer.len() + samples.len() > max_buffered_samples {
+            buffer.pop_front();
+        }
+        buffer.extend(samples);
+    }
+}
+
+trait MonitorSample {
+    fn from_f32(sample: f32) -> Self;
+}
+
+impl MonitorSample for f32 {
+    fn from_f32(sample: f32) -> Self {
+        sample.clamp(-1.0, 1.0)
+    }
+}
+
+impl MonitorSample for i16 {
+    fn from_f32(sample: f32) -> Self {
+        (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+    }
+}
+
+impl MonitorSample for u16 {
+    fn from_f32(sample: f32) -> Self {
+        ((sample.clamp(-1.0, 1.0) + 1.0) * 0.5 * u16::MAX as f32) as u16
+    }
+}
+
+fn build_monitor_stream(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    sample_format: CpalSampleFormat,
+    output_channels: usize,
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+) -> AppResult<cpal::Stream> {
+    let err_fn = |error| tracing::warn!(%error, "realtime monitor output stream error");
+    match sample_format {
+        CpalSampleFormat::F32 => {
+            let buffer = Arc::clone(&buffer);
+            device
+                .build_output_stream(
+                    config,
+                    move |data: &mut [f32], _| write_monitor_output(data, output_channels, &buffer),
+                    err_fn,
+                    None,
+                )
+                .map_err(|error| AppError::audio(error.to_string()))
+        }
+        CpalSampleFormat::I16 => {
+            let buffer = Arc::clone(&buffer);
+            device
+                .build_output_stream(
+                    config,
+                    move |data: &mut [i16], _| write_monitor_output(data, output_channels, &buffer),
+                    err_fn,
+                    None,
+                )
+                .map_err(|error| AppError::audio(error.to_string()))
+        }
+        CpalSampleFormat::U16 => {
+            let buffer = Arc::clone(&buffer);
+            device
+                .build_output_stream(
+                    config,
+                    move |data: &mut [u16], _| write_monitor_output(data, output_channels, &buffer),
+                    err_fn,
+                    None,
+                )
+                .map_err(|error| AppError::audio(error.to_string()))
+        }
+        other => Err(AppError::audio(format!("unsupported output sample format: {other:?}"))),
+    }
+}
+
+fn write_monitor_output<T: MonitorSample>(
+    output: &mut [T],
+    output_channels: usize,
+    buffer: &Arc<Mutex<VecDeque<f32>>>,
+) {
+    let mut samples = buffer.lock().expect("realtime monitor buffer lock poisoned");
+    for frame in output.chunks_mut(output_channels.max(1)) {
+        let sample = samples.pop_front().unwrap_or(0.0);
+        for output_sample in frame {
+            *output_sample = T::from_f32(sample);
+        }
+    }
 }
 
 fn spawn_silence_source(tx: mpsc::UnboundedSender<RealtimeAudioChunk>, format: PcmFormat) {
@@ -1266,33 +1712,127 @@ fn apply_tts_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
 fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
     if let Some(event) = event_name(value) {
         state.last_event = Some(event.to_string());
+        state.protocol_event = protocol_event_name(value);
+        state.event_seq = json_u64(value, "seq");
+        state.server_ts_ms = json_i64(value, "server_ts_ms");
+        state.schema_version = json_string(value, "schema_version");
+        if let Some(task_id) = json_string(value, "task_id").or_else(|| json_string(value, "session_id")) {
+            state.task_id = Some(task_id);
+        }
+        if let Some(utterance_id) = payload_string(value, "utterance_id") {
+            state.utterance_id = Some(utterance_id);
+        }
+        if let Some(hypothesis_id) = payload_string(value, "hypothesis_id") {
+            state.hypothesis_id = Some(hypothesis_id);
+        }
+        if let Some(revision_id) = payload_u64(value, "revision_id") {
+            state.revision_id = Some(revision_id);
+        }
+        if let Some(tts_job_id) = payload_string(value, "tts_job_id") {
+            state.tts_job_id = Some(tts_job_id);
+        }
+        if let Some(audio_chunk_index) = payload_u64(value, "audio_chunk_index") {
+            state.audio_chunk_index = Some(audio_chunk_index);
+        }
+        if let Some(config_version) = payload_u64(value, "config_version") {
+            state.config_version = Some(config_version);
+        }
+
         match event {
             "session_started" => {
                 state.websocket_state = "connected".into();
-                state.task_id = json_string(value, "task_id").or_else(|| json_string(value, "session_id"));
-                state.audio_mode = json_string(value, "audio_mode");
+                state.audio_mode = payload_string(value, "audio_mode");
+                state.pipeline_stage = "session_started".into();
+                state.last_prompt = Some("已连接 FunSpeech，正在准备实时会话".into());
             }
             "configured" | "ready" | "voice_switched" | "voice_updated" => {
                 state.websocket_state = "running".into();
-                if let Some(task_id) = json_string(value, "task_id").or_else(|| json_string(value, "session_id")) {
-                    state.task_id = Some(task_id);
-                }
-                if let Some(audio_mode) = json_string(value, "audio_mode") {
+                if let Some(audio_mode) = payload_string(value, "audio_mode") {
                     state.audio_mode = Some(audio_mode);
                 }
-                if let Some(voice_name) = json_string(value, "voice_name").or_else(|| json_string(value, "voiceName")) {
+                if let Some(voice_name) =
+                    payload_string(value, "voice_name").or_else(|| payload_string(value, "voiceName"))
+                {
                     state.configured_voice_name = voice_name.to_string();
+                }
+                if matches!(event, "voice_switched" | "voice_updated") {
+                    state.pipeline_stage = "voice_switched".into();
+                    state.last_prompt = Some("已切换音色".into());
+                } else {
+                    state.pipeline_stage = "configured".into();
+                    state.last_prompt = Some("音色已就绪，可以打开麦克风".into());
                 }
             }
             "parameters_updated" | "params_updated" => {
                 state.websocket_state = "running".into();
+                state.pipeline_stage = "parameters_updated".into();
+                state.last_prompt = Some("实时参数已生效".into());
             }
             "session_completed" | "closed" => {
                 state.websocket_state = "stopped".into();
+                state.pipeline_stage = "completed".into();
+                state.last_prompt = Some("实时会话已结束".into());
             }
-            "error" => {
+            "session.error" | "error" => {
                 state.websocket_state = "error".into();
-                state.last_error = json_string(value, "message");
+                state.last_error = payload_string(value, "message");
+                state.last_prompt = state.last_error.clone().or_else(|| Some("实时会话发生错误".into()));
+            }
+            "input.audio_dequeued" => {
+                state.pipeline_stage = "input_audio_dequeued".into();
+                state.last_prompt = Some("正在接收麦克风输入".into());
+            }
+            "backpressure.applied" => {
+                let reason = payload_string(value, "reason").unwrap_or_else(|| "backpressure".into());
+                let message = payload_string(value, "message").unwrap_or_else(|| "处理压力较高，可能有轻微延迟".into());
+                state.backpressure_hint = Some(if message.trim().is_empty() { reason } else { message });
+                state.pipeline_stage = "backpressure_applied".into();
+                state.last_prompt = Some("处理压力较高，可能有轻微延迟".into());
+            }
+            "asr.hypothesis" | "asr_result" => {
+                if let Some(text) = payload_string(value, "text") {
+                    state.asr_text = Some(text);
+                }
+                state.pipeline_stage = if payload_bool(value, "is_final").unwrap_or(false) {
+                    "asr_final".into()
+                } else {
+                    "asr_recognizing".into()
+                };
+                state.last_prompt = Some("正在识别语音".into());
+            }
+            "asr.text_committed" => {
+                if let Some(text) = payload_string(value, "full_text").or_else(|| payload_string(value, "delta_text")) {
+                    state.asr_text = Some(text);
+                }
+                state.pipeline_stage = "text_committed".into();
+                state.last_prompt = Some("已确认文本，正在准备变声".into());
+            }
+            "asr.sentence_finalized" => {
+                if let Some(text) = payload_string(value, "text") {
+                    state.asr_text = Some(text);
+                }
+                state.pipeline_stage = "sentence_finalized".into();
+                state.last_prompt = Some("本句语音识别完成".into());
+            }
+            "tts.job_queued" => {
+                state.pipeline_stage = "tts_queued".into();
+                state.last_prompt = Some("变声任务已排队".into());
+            }
+            "tts.job_started" => {
+                state.pipeline_stage = "tts_synthesizing".into();
+                state.last_prompt = Some("正在合成目标音色".into());
+            }
+            "tts.first_audio" => {
+                state.pipeline_stage = "tts_first_audio".into();
+                state.last_prompt = Some("即将播放转换后语音".into());
+            }
+            "tts.audio_chunk" => {
+                state.pipeline_stage = "tts_audio_chunk_ready".into();
+                state.last_prompt = Some("正在输出转换后语音".into());
+            }
+            "tts.job_completed" | "tts_completed" => {
+                state.pipeline_stage = "tts_completed".into();
+                state.last_prompt = Some("本段语音转换完成".into());
             }
             _ => {}
         }
@@ -1322,8 +1862,7 @@ mod tests {
     use super::{
         apply_asr_event, apply_json_event, apply_tts_event, funspeech_realtime_format, is_final_asr_event,
         resample_samples_linear, run_synthesis_message, start_synthesis_message, start_transcription_message,
-        text_from_asr_event,
-        RealtimeStreamSnapshot,
+        text_from_asr_event, RealtimeStreamSnapshot,
     };
 
     #[test]
@@ -1431,5 +1970,62 @@ mod tests {
         apply_json_event(&mut snapshot, &json!({"type": "voice_updated", "voice_name": "girl"}));
         assert_eq!(snapshot.configured_voice_name, "girl");
         assert_eq!(snapshot.last_event.as_deref(), Some("voice_updated"));
+    }
+
+    #[test]
+    fn realtime_voice_v1_events_update_lightweight_prompt_fields() {
+        let session = RealtimeSession {
+            session_id: "session-1".into(),
+            trace_id: "trace-1".into(),
+            voice_name: "desktop_voice".into(),
+            runtime_params: RuntimeParams::default(),
+            status: RealtimeSessionStatus::Running,
+            websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let mut snapshot = RealtimeStreamSnapshot::pending(&session);
+
+        apply_json_event(
+            &mut snapshot,
+            &json!({
+                "event": "asr.text_committed",
+                "task_id": "realtime_voice_1",
+                "seq": 7,
+                "server_ts_ms": 1730000000000i64,
+                "schema_version": "realtime_voice.v1",
+                "payload": {
+                    "utterance_id": "utt_1",
+                    "revision_id": 3,
+                    "full_text": "你好",
+                    "tts_job_id": "tts_3"
+                }
+            }),
+        );
+
+        assert_eq!(snapshot.task_id.as_deref(), Some("realtime_voice_1"));
+        assert_eq!(snapshot.event_seq, Some(7));
+        assert_eq!(snapshot.schema_version.as_deref(), Some("realtime_voice.v1"));
+        assert_eq!(snapshot.utterance_id.as_deref(), Some("utt_1"));
+        assert_eq!(snapshot.revision_id, Some(3));
+        assert_eq!(snapshot.tts_job_id.as_deref(), Some("tts_3"));
+        assert_eq!(snapshot.asr_text.as_deref(), Some("你好"));
+        assert_eq!(snapshot.last_prompt.as_deref(), Some("已确认文本，正在准备变声"));
+
+        apply_json_event(
+            &mut snapshot,
+            &json!({
+                "event": "tts.audio_chunk",
+                "payload": {
+                    "tts_job_id": "tts_3",
+                    "revision_id": 3,
+                    "audio_chunk_index": 2
+                }
+            }),
+        );
+
+        assert_eq!(snapshot.audio_chunk_index, Some(2));
+        assert_eq!(snapshot.last_prompt.as_deref(), Some("正在输出转换后语音"));
     }
 }

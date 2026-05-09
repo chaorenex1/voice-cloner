@@ -8,7 +8,6 @@ import type {
   VoiceSyncResult,
   VoiceSyncStatus,
 } from '../../utils/types/voice';
-import { getSettings, updateSettings } from './settings';
 
 interface CustomVoiceProfileView {
   voiceName: string;
@@ -102,10 +101,7 @@ function syncStatusFromReport(status: VoiceSyncReport['syncStatus']): VoiceSyncS
   }
 }
 
-function summaryFromProfile(
-  profile: CustomVoiceProfileView,
-  currentVoiceName: string | null
-): VoiceSummary {
+function summaryFromProfile(profile: CustomVoiceProfileView): VoiceSummary {
   const isRemoteImport = profile.sourcePromptText === 'funspeechRemote';
   return {
     voiceName: profile.voiceName,
@@ -116,16 +112,12 @@ function summaryFromProfile(
     updatedAt: profile.lastSyncedAt ?? profile.createdAt,
     referenceTextPreview: profile.referenceText.slice(0, 42),
     syncStatus: syncStatusFromProfile(profile.syncStatus),
-    isCurrent: currentVoiceName === profile.voiceName,
   };
 }
 
-function detailFromProfile(
-  profile: CustomVoiceProfileView,
-  currentVoiceName: string | null
-): VoiceDetail {
+function detailFromProfile(profile: CustomVoiceProfileView): VoiceDetail {
   return {
-    ...summaryFromProfile(profile, currentVoiceName),
+    ...summaryFromProfile(profile),
     voiceInstruction: profile.voiceInstruction,
     referenceText: profile.referenceText,
     referenceAudioFileName: profile.referenceAudioFileName ?? undefined,
@@ -133,25 +125,14 @@ function detailFromProfile(
   };
 }
 
-async function currentVoiceName(): Promise<string | null> {
-  try {
-    return (await getSettings()).runtime.defaultVoiceName;
-  } catch (_error) {
-    return null;
-  }
-}
-
 async function listCachedVoiceSummaries(): Promise<VoiceSummary[]> {
   if (voiceListCache) {
     return cloneVoiceSummaries(voiceListCache);
   }
 
-  voiceListPromise ??= Promise.all([
-    invoke<CustomVoiceProfileView[]>('list_custom_voices'),
-    currentVoiceName(),
-  ])
-    .then(([profiles, current]) => {
-      const summaries = profiles.map((profile) => summaryFromProfile(profile, current));
+  voiceListPromise ??= invoke<CustomVoiceProfileView[]>('list_custom_voices')
+    .then((profiles) => {
+      const summaries = profiles.map((profile) => summaryFromProfile(profile));
       voiceListCache = cloneVoiceSummaries(summaries);
       return cloneVoiceSummaries(summaries);
     })
@@ -167,10 +148,9 @@ export async function listVoices(): Promise<VoiceSummary[]> {
 }
 
 export async function getVoiceDetail(voiceName: string): Promise<VoiceDetail> {
-  const current = await currentVoiceName();
   try {
     const profile = await invoke<CustomVoiceProfileView>('get_custom_voice', { voiceName });
-    return detailFromProfile(profile, current);
+    return detailFromProfile(profile);
   } catch (_error) {
     throw new Error(`音色不存在：${voiceName}`);
   }
@@ -212,7 +192,6 @@ export async function createCustomVoice(
     updatedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
     referenceTextPreview: request.referenceText.slice(0, 42),
     syncStatus: 'localOnly',
-    isCurrent: false,
     voiceInstruction: request.voiceInstruction ?? '',
     referenceText: request.referenceText,
     referenceAudioFileName: request.upload.fileName,
@@ -269,25 +248,13 @@ export async function syncVoices(request: SyncVoicesRequest): Promise<VoiceSyncR
   };
 }
 
-export async function setCurrentVoiceName(voiceName: string): Promise<void> {
-  const settings = await getSettings();
-  await updateSettings({
-    ...settings,
-    runtime: {
-      ...settings.runtime,
-      defaultVoiceName: voiceName,
-    },
-  });
-  invalidateCustomVoiceCache();
-}
-
 export interface VoicePreviewState {
   playingVoiceName: string | null;
 }
 
 export async function toggleVoicePreview(detail: VoiceDetail): Promise<VoicePreviewState> {
   if (!detail.hasReferenceAudio || detail.source === 'remote') {
-    throw new Error('当前音色没有可试听的本地 wav 文件');
+    throw new Error('该音色没有可试听的本地 wav 文件');
   }
   return invoke<VoicePreviewState>('toggle_voice_preview', {
     request: {

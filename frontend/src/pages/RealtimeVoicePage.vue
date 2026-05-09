@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRealtimeStore } from '../stores/realtime.store';
 import { logRealtimeDebug } from '../utils/realtime-debug';
 
@@ -8,6 +8,31 @@ const emit = defineEmits<{
   openDeviceSettings: [];
 }>();
 let refreshTimer: number | undefined;
+const voiceDrawerOpen = ref(false);
+const visibleVoiceCount = ref(12);
+
+const visibleVoices = computed(() => realtime.state.voices.slice(0, visibleVoiceCount.value));
+const hasMoreVoices = computed(() => visibleVoiceCount.value < realtime.state.voices.length);
+
+function openVoiceDrawer(): void {
+  visibleVoiceCount.value = Math.min(12, Math.max(12, realtime.state.voices.length));
+  voiceDrawerOpen.value = true;
+}
+
+function closeVoiceDrawer(): void {
+  voiceDrawerOpen.value = false;
+}
+
+function loadMoreVoices(): void {
+  visibleVoiceCount.value = Math.min(visibleVoiceCount.value + 12, realtime.state.voices.length);
+}
+
+function handleVoiceDrawerScroll(event: Event): void {
+  const target = event.currentTarget as HTMLElement;
+  if (target.scrollTop + target.clientHeight >= target.scrollHeight - 24 && hasMoreVoices.value) {
+    loadMoreVoices();
+  }
+}
 
 const meterStyle = computed(() => {
   const peak = realtime.state.snapshot?.inputLevel.peak ?? 0;
@@ -23,7 +48,7 @@ const statusLabel = computed(() => {
     return '链路异常';
   }
   if (streamState.value === 'running') {
-    return 'FunSpeech 已连接';
+    return '会话已连接';
   }
   if (streamState.value === 'connecting') {
     return '连接中';
@@ -46,42 +71,36 @@ const frameProofLabel = computed(() => {
 
 const outputProofLabel = computed(() => {
   const snapshot = realtime.state.snapshot;
-  if (!realtime.state.settings?.device.virtualMicEnabled) {
-    return '虚拟麦未启用';
-  }
   if (!snapshot) {
-    return '虚拟麦 --';
+    return '监听 --';
   }
-  return snapshot.virtualMicFrames > 0
-    ? `虚拟麦写入 ${snapshot.virtualMicFrames}`
-    : '虚拟麦等待写入';
-});
-
-const pipelineLabel = computed(() => {
-  const mode = realtime.state.settings?.runtime.realtimeVoiceMode;
-  const prefix = mode === 'asrTts' ? 'B ASR→TTS' : 'A Realtime Voice';
-  const stage = realtime.state.snapshot?.pipelineStage;
-  return stage ? `${prefix} / ${stage}` : prefix;
+  if (snapshot.monitorState === 'listening') {
+    return snapshot.monitorFrames > 0 ? `监听播放 ${snapshot.monitorFrames}` : '监听等待音频';
+  }
+  return '监听未开启';
 });
 
 const realtimeProofHint = computed(() => {
   const snapshot = realtime.state.snapshot;
   if (!snapshot || streamState.value !== 'running') {
-    return '等待实时链路建立。';
+    return '点击开始仅建立 FunSpeech 实时会话，不会自动打开麦克风。';
+  }
+  if (snapshot.backpressureHint) {
+    return snapshot.backpressureHint;
+  }
+  if (snapshot.lastPrompt) {
+    return snapshot.lastPrompt;
   }
   if (snapshot.receivedFrames > 0) {
-    if (realtime.state.settings?.device.virtualMicEnabled && snapshot.virtualMicFrames === 0) {
-      return '已收到 FunSpeech 回包，但还没有写入虚拟麦克风。';
+    if (snapshot.monitorState === 'listening') {
+      return `已收到转换后语音 ${snapshot.receivedFrames} 帧，正在通过监听输出设备播放。`;
     }
-    return `已收到 FunSpeech 回包 ${snapshot.receivedFrames} 帧，可判定实时音频回路已通。`;
+    return `已收到转换后语音 ${snapshot.receivedFrames} 帧，可点击监听播放到输出设备。`;
   }
   if (snapshot.sentFrames > 0) {
-    if (realtime.state.settings?.runtime.realtimeVoiceMode === 'asrTts' && snapshot.asrText) {
-      return `ASR 已识别：${snapshot.asrText}；正在等待 TTS 音频回包。`;
-    }
-    return `已发送麦克风音频 ${snapshot.sentFrames} 帧，正在等待 FunSpeech 回包。`;
+    return `麦克风已发送 ${snapshot.sentFrames} 帧，正在等待 FunSpeech 返回转换后语音。`;
   }
-  return 'FunSpeech 已配置完成，正在等待本机麦克风输入。';
+  return '会话已就绪，点击麦克风开始采集并发送输入音频。';
 });
 
 const callHeadline = computed(() => {
@@ -89,12 +108,12 @@ const callHeadline = computed(() => {
     return '声音通话中断';
   }
   if (realtime.isRunning.value) {
-    return '正在用当前音色通话';
+    return realtime.isInputCapturing.value ? '正在采集麦克风输入' : '实时会话已就绪';
   }
   if (realtime.state.busy) {
     return '正在进入语音通话';
   }
-  return '准备开始语音通话';
+  return '准备建立实时变声会话';
 });
 
 const callHint = computed(() => {
@@ -104,8 +123,27 @@ const callHint = computed(() => {
   if (realtime.isRunning.value) {
     return realtimeProofHint.value;
   }
-  return '选择一个声音身份，点击底部按钮开始通话式实时变声。';
+  return '先选择音色，点击开始建立 WebSocket；需要说话时再打开麦克风。';
 });
+
+const monitorLabel = computed(() => {
+  if (realtime.state.snapshot?.monitorState === 'starting') {
+    return '监听中';
+  }
+  return realtime.isMonitoring.value ? '停监听' : '监听';
+});
+
+const micLabel = computed(() => {
+  if (realtime.state.snapshot?.inputState === 'starting') {
+    return '开启中';
+  }
+  return realtime.isInputCapturing.value ? '关麦克风' : '麦克风';
+});
+
+async function selectVoiceFromDrawer(voiceName: string): Promise<void> {
+  await realtime.selectVoice(voiceName);
+  closeVoiceDrawer();
+}
 
 onMounted(async () => {
   logRealtimeDebug('page:mounted');
@@ -137,8 +175,7 @@ onBeforeUnmount(() => {
         <span>{{ latencyLabel }}</span>
         <span>{{ frameProofLabel }}</span>
         <span>{{ outputProofLabel }}</span>
-        <span>{{ pipelineLabel }}</span>
-        <span>{{ realtime.state.snapshot?.audioMode ?? 'audio-mode --' }}</span>
+        <!-- <span>{{ realtime.state.snapshot?.audioMode ?? 'audio-mode --' }}</span> -->
       </div>
     </header>
 
@@ -146,13 +183,16 @@ onBeforeUnmount(() => {
       <main class="call-room" aria-label="语音通话房间">
         <div class="call-room__glow" aria-hidden="true"></div>
 
-        <section class="call-focus-card" :class="{ 'call-focus-card--live': realtime.isRunning.value }">
+        <section
+          class="call-focus-card"
+          :class="{ 'call-focus-card--live': realtime.isRunning.value }"
+        >
           <div class="voice-avatar-ring">
             <div class="voice-avatar">
               <span>{{ realtime.selectedVoice.value?.displayName?.slice(0, 2) ?? '声' }}</span>
             </div>
           </div>
-          <p class="stage-kicker">当前声音身份</p>
+          <p class="stage-kicker">实时声音身份</p>
           <h3>{{ realtime.selectedVoice.value?.displayName ?? '请选择音色' }}</h3>
           <p>{{ callHeadline }}</p>
 
@@ -176,13 +216,24 @@ onBeforeUnmount(() => {
         </div>
 
         <nav class="call-dock" aria-label="通话控制">
-          <button class="dock-button" type="button" :disabled="realtime.state.loading" @click="realtime.load">
-            <span>↻</span>
-            <small>刷新</small>
+          <button
+            class="dock-button"
+            type="button"
+            :disabled="realtime.state.loading"
+            @click="openVoiceDrawer"
+          >
+            <span>♪</span>
+            <small>音色</small>
           </button>
-          <button class="dock-button" type="button">
+          <button
+            class="dock-button"
+            type="button"
+            :class="{ 'dock-button--active': realtime.isMonitoring.value }"
+            :disabled="!realtime.canControlStream.value"
+            @click="realtime.toggleMonitor"
+          >
             <span>🎧</span>
-            <small>监听</small>
+            <small>{{ monitorLabel }}</small>
           </button>
           <button
             v-if="!realtime.isRunning.value"
@@ -202,11 +253,17 @@ onBeforeUnmount(() => {
             @click="realtime.stop"
           >
             <span>■</span>
-            <small>挂断</small>
+            <small>停止</small>
           </button>
-          <button class="dock-button" type="button">
+          <button
+            class="dock-button"
+            type="button"
+            :class="{ 'dock-button--active': realtime.isInputCapturing.value }"
+            :disabled="!realtime.canControlStream.value"
+            @click="realtime.toggleInput"
+          >
             <span>🎙</span>
-            <small>麦克风</small>
+            <small>{{ micLabel }}</small>
           </button>
           <button class="dock-button" type="button" @click="emit('openDeviceSettings')">
             <span>⚙</span>
@@ -214,6 +271,58 @@ onBeforeUnmount(() => {
           </button>
         </nav>
       </main>
+    </div>
+
+    <div v-if="voiceDrawerOpen" class="voice-drawer-backdrop" @click.self="closeVoiceDrawer">
+      <aside class="voice-drawer" aria-label="选择实时变声音色">
+        <header class="voice-drawer__header">
+          <div>
+            <p class="module-eyebrow">Voice Picker</p>
+            <h3>选择音色</h3>
+            <small>连接中选择音色会实时发送到 FunSpeech。</small>
+          </div>
+          <button
+            class="ghost-button"
+            type="button"
+            :disabled="realtime.state.loading"
+            @click="realtime.load"
+          >
+            {{ realtime.state.loading ? '刷新中' : '刷新列表' }}
+          </button>
+          <button class="icon-button" type="button" @click="closeVoiceDrawer">关闭</button>
+        </header>
+
+        <div class="voice-drawer__list" @scroll="handleVoiceDrawerScroll">
+          <article
+            v-for="voice in visibleVoices"
+            :key="voice.voiceName"
+            class="voice-drawer-card"
+            :class="{
+              'voice-drawer-card--active': voice.voiceName === realtime.state.selectedVoiceName,
+            }"
+          >
+            <button type="button" @click="selectVoiceFromDrawer(voice.voiceName)">
+              <strong>{{ voice.displayName }}</strong>
+              <span>{{
+                voice.source === 'preset'
+                  ? '预置音色'
+                  : voice.source === 'remote'
+                    ? '云端音色'
+                    : '自定义音色'
+              }}</span>
+              <small>{{ voice.referenceTextPreview || '点击选择为实时变声目标音色' }}</small>
+            </button>
+          </article>
+          <button
+            v-if="hasMoreVoices"
+            class="load-more-button"
+            type="button"
+            @click="loadMoreVoices"
+          >
+            下拉加载更多音色
+          </button>
+        </div>
+      </aside>
     </div>
   </section>
 </template>

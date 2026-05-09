@@ -522,6 +522,7 @@ button {
 .voice-library-layout {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .voice-rail,
@@ -539,6 +540,7 @@ button {
   display: flex;
   min-height: 0;
   min-width: 0;
+  max-height: 100%;
   overflow: hidden;
   flex-direction: column;
   padding: 18px;
@@ -572,23 +574,50 @@ button {
 }
 
 .voice-list {
-  display: grid;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 4px;
-  align-content: start;
+  overscroll-behavior: contain;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
   gap: 12px;
 }
 
+.voice-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.voice-list::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(21, 35, 52, 0.06);
+}
+
+.voice-list::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(120, 144, 15, 0.55), rgba(20, 35, 51, 0.38));
+}
+
+.voice-load-sentry {
+  flex: 0 0 auto;
+  padding-bottom: 6px;
+}
+
 .load-more-button {
+  width: 100%;
+  min-height: 42px;
   border: 1px dashed rgba(21, 35, 52, 0.18);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.42);
   color: #506074;
+  cursor: pointer;
   font-weight: 760;
 }
 
 .voice-card {
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid rgba(21, 35, 52, 0.1);
   border-radius: 22px;
@@ -1737,6 +1766,12 @@ button {
   background: #ffffff;
 }
 
+.dock-button--active {
+  background: #d9f7ff;
+  color: #123348;
+  box-shadow: 0 12px 28px rgba(55, 126, 171, 0.18);
+}
+
 .dock-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
@@ -1859,6 +1894,139 @@ button {
   font-weight: 860;
 }
 
+.voice-drawer-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  align-items: end;
+  background: rgba(16, 28, 42, 0.28);
+  backdrop-filter: blur(10px);
+}
+
+.voice-drawer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(76vh, 720px);
+  min-height: 360px;
+  justify-self: center;
+  overflow: hidden;
+  border: 1px solid rgba(21, 35, 52, 0.12);
+  border-radius: 30px 30px 0 0;
+  background:
+    radial-gradient(circle at 16% 0, rgba(230, 251, 132, 0.38), transparent 30%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(239, 245, 234, 0.96));
+  box-shadow: 0 -20px 70px rgba(24, 35, 51, 0.2);
+}
+
+.voice-drawer__header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid rgba(21, 35, 52, 0.1);
+}
+
+.voice-drawer__header > div {
+  min-width: 0;
+  margin-right: auto;
+}
+
+.voice-drawer__header h3,
+.voice-drawer__header p,
+.voice-drawer__header small {
+  margin: 0;
+}
+
+.voice-drawer__header h3 {
+  margin-top: 4px;
+  color: #121b29;
+  font-size: 1.45rem;
+}
+
+.voice-drawer__header small {
+  color: #667386;
+  font-weight: 720;
+}
+
+.voice-drawer__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 22px 24px;
+  scrollbar-gutter: stable;
+}
+
+.voice-drawer__list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.voice-drawer__list::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(21, 35, 52, 0.06);
+}
+
+.voice-drawer__list::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(120, 144, 15, 0.55), rgba(20, 35, 51, 0.38));
+}
+
+.voice-drawer-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(21, 35, 52, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.voice-drawer-card--active {
+  border-color: rgba(120, 144, 15, 0.42);
+  background: #f1ffd3;
+  box-shadow: 0 0 0 4px rgba(230, 251, 132, 0.24);
+}
+
+.voice-drawer-card button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+  padding: 15px;
+  background: transparent;
+  color: #172434;
+  cursor: pointer;
+  text-align: left;
+}
+
+.voice-drawer-card strong,
+.voice-drawer-card span,
+.voice-drawer-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-drawer-card strong {
+  font-size: 1rem;
+  font-weight: 840;
+}
+
+.voice-drawer-card span,
+.voice-drawer-card small {
+  color: #667386;
+  font-size: 0.78rem;
+}
+
+.voice-drawer__list > .load-more-button {
+  grid-column: 1 / -1;
+}
+
 @keyframes call-ring {
   to {
     transform: rotate(360deg);
@@ -1935,6 +2103,10 @@ button {
   }
 
   .call-room {
+    grid-template-columns: 1fr;
+  }
+
+  .voice-drawer__list {
     grid-template-columns: 1fr;
   }
 

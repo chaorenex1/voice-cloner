@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { VoiceSummary } from '../../utils/types/voice';
 
 const props = defineProps<{
@@ -11,23 +11,27 @@ const props = defineProps<{
 defineEmits<{
   select: [voiceName: string];
   preview: [voiceName: string];
-  setCurrent: [voiceName: string];
 }>();
 
 const pageSize = 12;
 const visibleCount = ref(pageSize);
+const listEl = ref<HTMLElement | null>(null);
+const loadMoreSentry = ref<HTMLElement | null>(null);
 const visibleVoices = computed(() => props.voices.slice(0, visibleCount.value));
 const hasMore = computed(() => visibleCount.value < props.voices.length);
+let loadMoreObserver: IntersectionObserver | null = null;
 
 watch(
   () => [props.voices.length, props.voices.map((voice) => voice.voiceName).join('|')],
   () => {
-    visibleCount.value = pageSize;
+    visibleCount.value = Math.min(pageSize, props.voices.length);
+    void nextTick(observeLoadMoreSentry);
   }
 );
 
 function loadMore(): void {
   visibleCount.value = Math.min(visibleCount.value + pageSize, props.voices.length);
+  void nextTick(observeLoadMoreSentry);
 }
 
 function handleScroll(event: Event): void {
@@ -37,6 +41,40 @@ function handleScroll(event: Event): void {
     loadMore();
   }
 }
+
+function observeLoadMoreSentry(): void {
+  loadMoreObserver?.disconnect();
+  if (
+    !listEl.value ||
+    !loadMoreSentry.value ||
+    !hasMore.value ||
+    !('IntersectionObserver' in window)
+  ) {
+    return;
+  }
+
+  loadMoreObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting) && hasMore.value) {
+        loadMore();
+      }
+    },
+    {
+      root: listEl.value,
+      rootMargin: '96px 0px',
+      threshold: 0.01,
+    }
+  );
+  loadMoreObserver.observe(loadMoreSentry.value);
+}
+
+onMounted(() => {
+  void nextTick(observeLoadMoreSentry);
+});
+
+onBeforeUnmount(() => {
+  loadMoreObserver?.disconnect();
+});
 </script>
 
 <template>
@@ -46,7 +84,7 @@ function handleScroll(event: Event): void {
       <strong>{{ voices.length }}</strong>
     </div>
 
-    <div v-if="voices.length" class="voice-list" @scroll="handleScroll">
+    <div v-if="voices.length" ref="listEl" class="voice-list" @scroll="handleScroll">
       <article
         v-for="voice in visibleVoices"
         :key="voice.voiceName"
@@ -56,7 +94,6 @@ function handleScroll(event: Event): void {
         <button class="voice-card__main" type="button" @click="$emit('select', voice.voiceName)">
           <span class="voice-card__title">
             {{ voice.displayName }}
-            <small v-if="voice.isCurrent">当前</small>
           </span>
           <span class="voice-card__meta">
             {{
@@ -76,12 +113,11 @@ function handleScroll(event: Event): void {
           <button type="button" @click="$emit('preview', voice.voiceName)">
             {{ playingVoiceName === voice.voiceName ? '停止' : '试听' }}
           </button>
-          <button type="button" @click="$emit('setCurrent', voice.voiceName)">设为当前音色</button>
         </div>
       </article>
-      <button v-if="hasMore" class="load-more-button" type="button" @click="loadMore">
-        加载更多音色
-      </button>
+      <div v-if="hasMore" ref="loadMoreSentry" class="voice-load-sentry">
+        <button class="load-more-button" type="button" @click="loadMore">下滑加载更多音色</button>
+      </div>
     </div>
 
     <div v-else class="empty-state">

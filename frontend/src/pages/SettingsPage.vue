@@ -12,7 +12,6 @@ const {
   updateDeviceSettings,
   updateBackendSettings,
   updateFunSpeechSettings,
-  updateRuntimeSettings,
   saveSettings,
 } = useSettingsStore();
 
@@ -73,10 +72,8 @@ watch(() => props.returnTarget, ensureDeviceSectionForReturn);
     <BackendSettingsForm
       v-else
       :settings="state.settings?.backend ?? null"
-      :runtime="state.settings?.runtime ?? null"
       @update="updateBackendSettings"
       @update-fun-speech="updateFunSpeechSettings"
-      @update-runtime="updateRuntimeSettings"
       @commit="saveSettings"
     />
   </section>

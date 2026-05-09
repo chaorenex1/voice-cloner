@@ -110,7 +110,6 @@ impl Default for RealtimeVoiceMode {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettings {
-    pub default_voice_name: Option<String>,
     pub default_output_format: String,
     pub default_sample_rate: u32,
     pub audio_frame_ms: u16,
@@ -121,7 +120,6 @@ pub struct RuntimeSettings {
 impl Default for RuntimeSettings {
     fn default() -> Self {
         Self {
-            default_voice_name: None,
             default_output_format: "wav".into(),
             default_sample_rate: 48_000,
             audio_frame_ms: 20,
@@ -143,6 +141,7 @@ impl AppSettings {
         for config in [&mut self.backend.asr, &mut self.backend.tts, &mut self.backend.realtime] {
             config.model = None;
         }
+        self.runtime.realtime_voice_mode = RealtimeVoiceMode::RealtimeVoice;
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -186,7 +185,6 @@ pub struct BackendSettingsPatch {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettingsPatch {
-    pub default_voice_name: Option<Option<String>>,
     pub default_output_format: Option<String>,
     pub default_sample_rate: Option<u32>,
     pub audio_frame_ms: Option<u16>,
@@ -237,9 +235,6 @@ impl AppSettingsPatch {
         }
 
         if let Some(runtime) = self.runtime {
-            if let Some(default_voice_name) = runtime.default_voice_name {
-                settings.runtime.default_voice_name = default_voice_name;
-            }
             if let Some(default_output_format) = runtime.default_output_format {
                 settings.runtime.default_output_format = default_output_format;
             }
@@ -285,7 +280,7 @@ mod tests {
                 ..Default::default()
             }),
             runtime: Some(RuntimeSettingsPatch {
-                default_voice_name: Some(Some("narrator".into())),
+                default_output_format: Some("pcm".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -294,7 +289,7 @@ mod tests {
         let settings = patch.apply_to(AppSettings::default());
 
         assert_eq!(settings.device.input_device_id.as_deref(), Some("mic-1"));
-        assert_eq!(settings.runtime.default_voice_name.as_deref(), Some("narrator"));
+        assert_eq!(settings.runtime.default_output_format, "pcm");
         assert!(settings.device.virtual_mic_enabled);
         assert_eq!(settings.device.virtual_mic_device_id.as_deref(), Some("virtual-mic-1"));
     }
@@ -305,5 +300,18 @@ mod tests {
         settings.backend.realtime.base_url = "localhost:8000".into();
 
         assert!(settings.validate().unwrap_err().contains("baseUrl"));
+    }
+
+    #[test]
+    fn normalize_forces_realtime_voice_mode_to_single_entrypoint() {
+        let mut settings = AppSettings::default();
+        settings.runtime.realtime_voice_mode = super::RealtimeVoiceMode::AsrTts;
+
+        settings.normalize_for_local_save();
+
+        assert_eq!(
+            settings.runtime.realtime_voice_mode,
+            super::RealtimeVoiceMode::RealtimeVoice
+        );
     }
 }

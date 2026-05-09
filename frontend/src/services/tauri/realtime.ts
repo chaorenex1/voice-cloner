@@ -110,11 +110,26 @@ function mockSnapshot(session: RealtimeSession): RealtimeStreamSnapshot {
     receivedBytes: session.status === 'running' ? 80640 : 0,
     latencyMs: session.status === 'running' ? 24 : null,
     inputLevel: { rms: 0, peak: 0 },
+    inputState: 'off',
+    monitorState: 'off',
     virtualMicFrames: session.status === 'running' ? 42 : 0,
+    monitorFrames: 0,
     pipelineStage: session.status === 'running' ? 'preview_audio_received' : 'preview',
     asrText: null,
     ttsTextChunks: 0,
     lastEvent: session.status === 'running' ? 'configured' : null,
+    protocolEvent: session.status === 'running' ? 'session.configured' : null,
+    lastPrompt: session.status === 'running' ? '音色已就绪，可以打开麦克风' : null,
+    eventSeq: null,
+    serverTsMs: null,
+    schemaVersion: session.status === 'running' ? 'realtime_voice.v1' : null,
+    utteranceId: null,
+    hypothesisId: null,
+    revisionId: null,
+    ttsJobId: null,
+    audioChunkIndex: null,
+    configVersion: null,
+    backpressureHint: null,
     lastError: null,
   };
 }
@@ -126,19 +141,54 @@ export async function createRealtimeSession(
 }
 
 export async function startRealtimeSession(session: RealtimeSession): Promise<RealtimeSession> {
-  return invokeRealtime(
-    'start_realtime_session',
-    { sessionId: session.sessionId },
-    () => ({ ...session, status: 'running' as const, updatedAt: new Date().toISOString() }),
-  );
+  return invokeRealtime('start_realtime_session', { sessionId: session.sessionId }, () => ({
+    ...session,
+    status: 'running' as const,
+    updatedAt: new Date().toISOString(),
+  }));
 }
 
 export async function stopRealtimeSession(session: RealtimeSession): Promise<RealtimeSession> {
-  return invokeRealtime(
-    'stop_realtime_session',
-    { sessionId: session.sessionId },
-    () => ({ ...session, status: 'stopped' as const, updatedAt: new Date().toISOString() }),
-  );
+  return invokeRealtime('stop_realtime_session', { sessionId: session.sessionId }, () => ({
+    ...session,
+    status: 'stopped' as const,
+    updatedAt: new Date().toISOString(),
+  }));
+}
+
+export async function startRealtimeInput(
+  session: RealtimeSession
+): Promise<RealtimeStreamSnapshot> {
+  return invokeRealtime('start_realtime_input', { sessionId: session.sessionId }, () => ({
+    ...mockSnapshot(session),
+    inputState: 'capturing',
+  }));
+}
+
+export async function stopRealtimeInput(session: RealtimeSession): Promise<RealtimeStreamSnapshot> {
+  return invokeRealtime('stop_realtime_input', { sessionId: session.sessionId }, () => ({
+    ...mockSnapshot(session),
+    inputState: 'off',
+  }));
+}
+
+export async function startRealtimeMonitor(
+  session: RealtimeSession
+): Promise<RealtimeStreamSnapshot> {
+  return invokeRealtime('start_realtime_monitor', { sessionId: session.sessionId }, () => ({
+    ...mockSnapshot(session),
+    monitorState: 'listening',
+    monitorFrames: 12,
+  }));
+}
+
+export async function stopRealtimeMonitor(
+  session: RealtimeSession
+): Promise<RealtimeStreamSnapshot> {
+  return invokeRealtime('stop_realtime_monitor', { sessionId: session.sessionId }, () => ({
+    ...mockSnapshot(session),
+    monitorState: 'off',
+  }));
 }
 
 export async function updateRealtimeParams(
@@ -159,7 +209,7 @@ export async function updateRealtimeParams(
         errorSummary: null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      }) satisfies RealtimeSession,
+      }) satisfies RealtimeSession
   );
 }
 
@@ -181,16 +231,14 @@ export async function switchRealtimeVoice(
         errorSummary: null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      }) satisfies RealtimeSession,
+      }) satisfies RealtimeSession
   );
 }
 
 export async function getRealtimeStreamSnapshot(
   session: RealtimeSession
 ): Promise<RealtimeStreamSnapshot> {
-  return invokeRealtime(
-    'get_realtime_stream_snapshot',
-    { sessionId: session.sessionId },
-    () => mockSnapshot(session),
+  return invokeRealtime('get_realtime_stream_snapshot', { sessionId: session.sessionId }, () =>
+    mockSnapshot(session)
   );
 }
