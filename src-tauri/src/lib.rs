@@ -33,6 +33,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(state)
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             tauri_api::app_commands::get_app_summary,
             tauri_api::app_commands::get_app_runtime_info,
@@ -70,6 +71,9 @@ pub fn run() {
             tauri_api::offline_commands::fail_offline_job,
             tauri_api::offline_commands::get_offline_job,
             tauri_api::offline_commands::list_offline_jobs,
+            tauri_api::offline_commands::clear_offline_jobs,
+            tauri_api::offline_commands::delete_offline_job,
+            tauri_api::offline_commands::download_offline_job,
             tauri_api::voice_design_commands::create_voice_design_draft,
             tauri_api::voice_design_commands::start_voice_design_asr,
             tauri_api::voice_design_commands::complete_voice_design_asr,

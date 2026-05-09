@@ -76,10 +76,9 @@ export async function startOfflineJob(jobId: string): Promise<OfflineJob> {
     () =>
       mockJob({
         jobId,
-        status: 'completed',
-        stage: 'completed',
-        progress: 100,
-        localArtifactPath: `preview/offline-exports/${jobId}.wav`,
+        status: 'running',
+        stage: 'preparing',
+        progress: 5,
       }),
     { jobId }
   );
@@ -109,6 +108,40 @@ export async function listOfflineJobs(): Promise<OfflineJob[]> {
   return invokeWithMockFallback('list_offline_jobs', () => []);
 }
 
+export interface OfflineJobsClearResult {
+  removedCount: number;
+}
+
+export async function clearOfflineJobs(): Promise<OfflineJobsClearResult> {
+  return invokeWithMockFallback('clear_offline_jobs', () => ({ removedCount: 0 }));
+}
+
+export interface OfflineJobDeleteResult {
+  removed: OfflineJob;
+}
+
+export async function deleteOfflineJob(jobId: string): Promise<OfflineJobDeleteResult> {
+  return invokeWithMockFallback('delete_offline_job', () => ({ removed: mockJob({ jobId }) }), {
+    jobId,
+  });
+}
+
+export interface OfflineJobDownloadResult {
+  targetPath: string;
+}
+
+export async function downloadOfflineJob(
+  jobId: string,
+  targetPath: string
+): Promise<OfflineJobDownloadResult> {
+  return invokeWithMockFallback('download_offline_job', () => ({ targetPath }), {
+    jobId,
+    request: {
+      targetPath,
+    },
+  });
+}
+
 export interface OfflineJobPreviewState {
   playingJobId: string | null;
 }
@@ -134,6 +167,12 @@ export function listenOfflineJobPreviewFinished(
   handler: (event: OfflineJobPreviewFinishedEvent) => void
 ): Promise<() => void> {
   return listen<OfflineJobPreviewFinishedEvent>('offline-job-preview-finished', (event) => {
+    handler(event.payload);
+  });
+}
+
+export function listenOfflineJobUpdated(handler: (job: OfflineJob) => void): Promise<() => void> {
+  return listen<OfflineJob>('offline-job-updated', (event) => {
     handler(event.payload);
   });
 }

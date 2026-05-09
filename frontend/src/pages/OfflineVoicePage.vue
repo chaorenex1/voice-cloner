@@ -7,6 +7,10 @@ const offline = useOfflineStore();
 
 const currentJob = computed(() => offline.state.currentJob);
 const statusLabel = computed(() => labelForStatus(currentJob.value));
+const isCurrentJobRunning = computed(() => currentJob.value?.status === 'running');
+const progressStyle = computed(() => ({
+  width: `${Math.min(Math.max(currentJob.value?.progress ?? 0, 0), 100)}%`,
+}));
 
 onMounted(() => {
   void offline.load();
@@ -96,22 +100,24 @@ function stageLabel(stage: string): string {
           </button>
         </div>
 
-        <label v-if="offline.state.inputType === 'audio'" class="drop-zone">
-          <input type="file" accept=".wav,audio/wav,audio/x-wav" @change="handleFileChange" />
-          <span>选择 WAV</span>
-          <strong>{{ offline.state.selectedFile?.name ?? '拖入或点击选择一段人声音频' }}</strong>
-          <small>会按 60 秒自动分块处理，全部完成后合并为一个 WAV。</small>
-        </label>
+        <Transition name="offline-panel" mode="out-in">
+          <label v-if="offline.state.inputType === 'audio'" key="audio" class="drop-zone">
+            <input type="file" accept=".wav,audio/wav,audio/x-wav" @change="handleFileChange" />
+            <span>选择 WAV</span>
+            <strong>{{ offline.state.selectedFile?.name ?? '拖入或点击选择一段人声音频' }}</strong>
+            <small>10 秒内直接识别；超过 10 秒会按 60 秒自动分块异步识别。</small>
+          </label>
 
-        <label v-else class="text-input-block">
-          <span>要生成的文本</span>
-          <textarea
-            v-model="offline.state.text"
-            maxlength="1200"
-            placeholder="输入台词、旁白或角色配音文本..."
-          ></textarea>
-          <small>{{ offline.state.text.trim().length }} / 1200</small>
-        </label>
+          <label v-else key="text" class="text-input-block">
+            <span>要生成的文本</span>
+            <textarea
+              v-model="offline.state.text"
+              maxlength="1200"
+              placeholder="输入台词、旁白或角色配音文本..."
+            ></textarea>
+            <small>{{ offline.state.text.trim().length }} / 1200</small>
+          </label>
+        </Transition>
 
         <div class="offline-form-row">
           <label>
@@ -183,63 +189,114 @@ function stageLabel(stage: string): string {
       <aside class="offline-card offline-card--result" aria-live="polite">
         <p class="panel-kicker">Current Job</p>
         <h3>{{ currentJob ? statusLabel : '等待任务' }}</h3>
-        <p class="job-message" :class="{ error: offline.state.lastError }">
-          {{ offline.state.lastError ?? offline.state.lastMessage }}
-        </p>
+        <Transition name="offline-panel" mode="out-in">
+          <div v-if="currentJob && isCurrentJobRunning" class="job-loader" aria-label="任务处理中">
+            <div class="job-loader__orb" aria-hidden="true">
+              <span></span>
+              <span></span>
+            </div>
+            <div class="job-loader__copy">
+              <strong>{{ currentJob.progress }}%</strong>
+              <small>{{ stageLabel(currentJob.stage) }}</small>
+              <div class="job-loader__track" aria-hidden="true">
+                <i :style="progressStyle"></i>
+              </div>
+            </div>
+          </div>
+        </Transition>
+        <Transition name="offline-panel" mode="out-in">
+          <p
+            :key="offline.state.lastError ?? offline.state.lastMessage"
+            class="job-message"
+            :class="{ error: offline.state.lastError }"
+          >
+            {{ offline.state.lastError ?? offline.state.lastMessage }}
+          </p>
+        </Transition>
 
-        <dl v-if="currentJob" class="job-proof-list">
-          <div>
-            <dt>任务 ID</dt>
-            <dd>{{ currentJob.jobId }}</dd>
-          </div>
-          <div>
-            <dt>输入</dt>
-            <dd>
-              {{ currentJob.inputFileName ?? (currentJob.inputType === 'text' ? '文本' : '音频') }}
-            </dd>
-          </div>
-          <div>
-            <dt>音色</dt>
-            <dd>{{ currentJob.voiceName }}</dd>
-          </div>
-          <div>
-            <dt>导出路径</dt>
-            <dd>{{ currentJob.localArtifactPath ?? '尚未生成' }}</dd>
-          </div>
-        </dl>
+        <Transition name="offline-panel" mode="out-in">
+          <dl
+            v-if="currentJob"
+            :key="`${currentJob.jobId}-${currentJob.stage}`"
+            class="job-proof-list"
+          >
+            <div>
+              <dt>任务 ID</dt>
+              <dd>{{ currentJob.jobId }}</dd>
+            </div>
+            <div>
+              <dt>输入</dt>
+              <dd>
+                {{
+                  currentJob.inputFileName ?? (currentJob.inputType === 'text' ? '文本' : '音频')
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>音色</dt>
+              <dd>{{ currentJob.voiceName }}</dd>
+            </div>
+          </dl>
+        </Transition>
 
-        <div v-if="currentJob" class="job-actions">
-          <button
-            type="button"
-            :disabled="!['failed', 'cancelled'].includes(currentJob.status) || offline.state.busy"
-            @click="offline.retry(currentJob)"
+        <Transition name="offline-panel" mode="out-in">
+          <div
+            v-if="currentJob"
+            :key="`${currentJob.jobId}-${currentJob.status}`"
+            class="job-actions"
           >
-            重试
-          </button>
-          <button
-            type="button"
-            :disabled="currentJob.status !== 'running' || offline.state.busy"
-            @click="offline.cancel(currentJob)"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            :disabled="!offline.canPreviewJob(currentJob) || offline.state.busy"
-            @click="offline.togglePreview(currentJob)"
-          >
-            {{ offline.state.playingJobId === currentJob.jobId ? '停止试听' : '试听' }}
-          </button>
-        </div>
+            <button
+              type="button"
+              :disabled="
+                !['failed', 'cancelled', 'completed'].includes(currentJob.status) ||
+                offline.state.busy
+              "
+              @click="offline.retry(currentJob)"
+            >
+              重试
+            </button>
+            <button
+              type="button"
+              :disabled="currentJob.status !== 'running' || offline.state.busy"
+              @click="offline.cancel(currentJob)"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              :disabled="!offline.canPreviewJob(currentJob) || offline.state.busy"
+              @click="offline.togglePreview(currentJob)"
+            >
+              {{ offline.state.playingJobId === currentJob.jobId ? '停止试听' : '试听' }}
+            </button>
+            <button
+              type="button"
+              :disabled="!offline.canDownloadJob(currentJob) || offline.state.busy"
+              @click="offline.download(currentJob)"
+            >
+              下载
+            </button>
+          </div>
+        </Transition>
       </aside>
     </div>
 
     <section class="offline-history" aria-labelledby="offline-history-title">
       <div class="history-heading">
-        <p class="module-eyebrow">Exports</p>
-        <h3 id="offline-history-title">最近离线记录</h3>
+        <div>
+          <p class="module-eyebrow">Exports</p>
+          <h3 id="offline-history-title">最近离线记录</h3>
+        </div>
+        <button
+          class="history-clear"
+          type="button"
+          :disabled="offline.state.jobs.length === 0 || offline.state.busy"
+          @click="offline.clearHistory"
+        >
+          清理记录和音频
+        </button>
       </div>
-      <div class="history-list">
+      <TransitionGroup name="offline-list" tag="div" class="history-list">
         <div
           v-for="job in offline.state.jobs"
           :key="job.jobId"
@@ -259,9 +316,25 @@ function stageLabel(stage: string): string {
           >
             {{ offline.state.playingJobId === job.jobId ? '停止' : '试听' }}
           </button>
+          <button
+            class="history-row__download"
+            type="button"
+            :disabled="!offline.canDownloadJob(job) || offline.state.busy"
+            @click="offline.download(job)"
+          >
+            下载
+          </button>
+          <button
+            class="history-row__delete"
+            type="button"
+            :disabled="offline.state.busy"
+            @click="offline.deleteJob(job)"
+          >
+            删除
+          </button>
         </div>
-        <p v-if="offline.state.jobs.length === 0" class="empty-history">暂无离线任务记录。</p>
-      </div>
+      </TransitionGroup>
+      <p v-if="offline.state.jobs.length === 0" class="empty-history">暂无离线任务记录。</p>
     </section>
   </section>
 </template>
@@ -365,6 +438,9 @@ function stageLabel(stage: string): string {
 
 .segmented-control button,
 .job-actions button,
+.history-clear,
+.history-row__delete,
+.history-row__download,
 .history-row__preview,
 .offline-submit {
   border-radius: 999px;
@@ -481,6 +557,9 @@ select {
 
 .offline-submit:disabled,
 .job-actions button:disabled,
+.history-clear:disabled,
+.history-row__delete:disabled,
+.history-row__download:disabled,
 .history-row__preview:disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -499,6 +578,96 @@ select {
 
 .job-message.error {
   color: #ad352e;
+}
+
+.job-loader {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  margin: 18px 0 6px;
+  padding: 14px;
+  border: 1px solid rgba(16, 32, 47, 0.08);
+  border-radius: 22px;
+  background:
+    linear-gradient(120deg, rgba(230, 251, 132, 0.58), rgba(255, 255, 255, 0.42)),
+    radial-gradient(circle at 92% 12%, rgba(90, 169, 255, 0.24), transparent 34%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
+}
+
+.job-loader__orb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #10202f;
+  box-shadow:
+    0 12px 28px rgba(16, 32, 47, 0.28),
+    inset 0 0 0 10px rgba(230, 251, 132, 0.18);
+}
+
+.job-loader__orb::before {
+  position: absolute;
+  inset: 13px;
+  border-radius: inherit;
+  background: #e6fb84;
+  content: '';
+  animation: job-pulse 1.1s ease-in-out infinite;
+}
+
+.job-loader__orb span {
+  position: absolute;
+  inset: -5px;
+  border: 2px solid transparent;
+  border-top-color: #10202f;
+  border-right-color: rgba(16, 32, 47, 0.25);
+  border-radius: inherit;
+  animation: job-spin 1.05s linear infinite;
+}
+
+.job-loader__orb span + span {
+  inset: 5px;
+  border-top-color: #5aa9ff;
+  animation-duration: 1.45s;
+  animation-direction: reverse;
+}
+
+.job-loader__copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.job-loader__copy strong {
+  color: #101c29;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.job-loader__copy small {
+  overflow: hidden;
+  color: #657384;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-loader__track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(16, 32, 47, 0.1);
+}
+
+.job-loader__track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, #10202f 0%, #5aa9ff 52%, #e6fb84 100%),
+    repeating-linear-gradient(45deg, transparent 0 8px, rgba(255, 255, 255, 0.45) 8px 16px);
+  box-shadow: 0 0 18px rgba(90, 169, 255, 0.36);
+  transition: width 260ms ease;
 }
 
 .job-proof-list {
@@ -537,6 +706,15 @@ select {
   padding: 10px 16px;
   background: rgba(16, 32, 47, 0.08);
   color: #10202f;
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    opacity 180ms ease;
+}
+
+.job-actions button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  background: rgba(16, 32, 47, 0.14);
 }
 
 .offline-history {
@@ -544,9 +722,26 @@ select {
   padding: 24px;
 }
 
+.history-heading {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .history-heading h3 {
   margin: 6px 0 0;
   color: #142033;
+}
+
+.history-clear {
+  padding: 10px 14px;
+  background: rgba(173, 53, 46, 0.1);
+  color: #8f2b25;
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    opacity 180ms ease;
 }
 
 .history-list {
@@ -557,7 +752,7 @@ select {
 
 .history-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -566,6 +761,11 @@ select {
   background: rgba(255, 255, 255, 0.58);
   color: #182235;
   text-align: left;
+  transition:
+    transform 200ms ease,
+    background 200ms ease,
+    box-shadow 200ms ease,
+    opacity 200ms ease;
 }
 
 .history-row__select {
@@ -585,8 +785,80 @@ select {
   font-weight: 800;
 }
 
+.history-row__download {
+  padding: 8px 14px;
+  background: rgba(16, 32, 47, 0.08);
+  color: #10202f;
+}
+
+.history-row__delete {
+  padding: 8px 14px;
+  background: rgba(173, 53, 46, 0.1);
+  color: #8f2b25;
+}
+
+.history-clear:hover:not(:disabled),
+.history-row__delete:hover:not(:disabled),
+.history-row__preview:hover:not(:disabled),
+.history-row__download:hover:not(:disabled),
+.offline-submit:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
 .history-row.selected {
   background: #e6fb84;
+  box-shadow: 0 16px 34px rgba(113, 128, 15, 0.18);
+}
+
+.offline-list-enter-active,
+.offline-list-leave-active {
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease;
+}
+
+.offline-list-enter-from,
+.offline-list-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+
+.offline-list-move {
+  transition: transform 220ms ease;
+}
+
+.offline-panel-enter-active,
+.offline-panel-leave-active {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease,
+    filter 180ms ease;
+}
+
+.offline-panel-enter-from,
+.offline-panel-leave-to {
+  opacity: 0;
+  filter: blur(3px);
+  transform: translateY(8px);
+}
+
+@keyframes job-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes job-pulse {
+  0%,
+  100% {
+    transform: scale(0.76);
+    opacity: 0.82;
+  }
+
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .history-row__select strong {
@@ -610,9 +882,14 @@ select {
   .offline-grid,
   .offline-form-row,
   .offline-param-grid,
+  .history-heading,
   .history-row__select,
   .history-row {
     grid-template-columns: 1fr;
+  }
+
+  .history-heading {
+    align-items: stretch;
   }
 }
 </style>

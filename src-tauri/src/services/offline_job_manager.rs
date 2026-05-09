@@ -15,7 +15,7 @@ use crate::{
         trace::{new_entity_id, TraceId},
     },
     clients::funspeech::{
-        offline::{transcribe_audio_bytes, OfflineEndpoints},
+        offline::{transcribe_audio_bytes, transcribe_audio_bytes_async, OfflineEndpoints},
         tts::{synthesize_text, OfflineTtsRequest},
     },
     domain::{
@@ -28,6 +28,7 @@ use crate::{
 };
 
 const OFFLINE_AUDIO_CHUNK_SECONDS: usize = 60;
+const SHORT_AUDIO_DIRECT_ASR_SECONDS: f64 = 10.0;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -190,49 +191,101 @@ impl OfflineJobManager {
         Ok(job)
     }
 
-    pub fn start_job(&self, job_id: &str, settings: &AppSettings, cache: &AssetCache) -> AppResult<OfflineJob> {
-        let running = self.patch_job(job_id, |job| {
+    pub fn begin_job(&self, job_id: &str) -> AppResult<OfflineJob> {
+        self.patch_job(job_id, |job| {
             job.status = OfflineJobStatus::Running;
             job.stage = "preparing".into();
             job.progress = 5;
             job.error_summary = None;
             job.updated_at = Utc::now();
-        })?;
+        })
+    }
 
+    pub fn start_job(&self, job_id: &str, settings: &AppSettings, cache: &AssetCache) -> AppResult<OfflineJob> {
+        let running = self.begin_job(job_id)?;
+        self.run_started_job_with_updates(running, settings, cache, |_| {})
+    }
+
+    pub fn run_started_job_with_updates<F>(
+        &self,
+        running: OfflineJob,
+        settings: &AppSettings,
+        cache: &AssetCache,
+        on_update: F,
+    ) -> AppResult<OfflineJob>
+    where
+        F: Fn(OfflineJob),
+    {
         let result = match running.input_type {
-            OfflineJobInputType::Text => self.run_text_job(&running, settings, cache),
-            OfflineJobInputType::Audio => self.run_audio_job(&running, settings, cache),
+            OfflineJobInputType::Text => self.run_text_job(&running, settings, cache, &on_update),
+            OfflineJobInputType::Audio => self.run_audio_job(&running, settings, cache, &on_update),
         };
 
         match result {
             Ok(job) => Ok(job),
-            Err(error) => self.fail_running_job(job_id, error.to_string()),
+            Err(error) => {
+                let failed = self.fail_running_job(&running.job_id, error.to_string())?;
+                on_update(failed.clone());
+                Ok(failed)
+            }
         }
     }
 
-    fn run_audio_job(&self, running: &OfflineJob, settings: &AppSettings, cache: &AssetCache) -> AppResult<OfflineJob> {
-        self.patch_job(&running.job_id, |job| {
-            job.stage = "splittingAudio".into();
-            job.progress = 10;
-            job.updated_at = Utc::now();
-        })?;
+    fn run_audio_job<F>(
+        &self,
+        running: &OfflineJob,
+        settings: &AppSettings,
+        cache: &AssetCache,
+        on_update: &F,
+    ) -> AppResult<OfflineJob>
+    where
+        F: Fn(OfflineJob),
+    {
+        let input_duration = wav_duration_seconds(&running.input_ref)?;
+        if input_duration <= SHORT_AUDIO_DIRECT_ASR_SECONDS {
+            return self.run_short_audio_job(running, settings, cache, on_update);
+        }
+
+        self.patch_job_and_emit(
+            &running.job_id,
+            |job| {
+                job.stage = "splittingAudio".into();
+                job.progress = 10;
+                job.updated_at = Utc::now();
+            },
+            on_update,
+        )?;
         let input_chunks = split_wav_file(&running.input_ref, OFFLINE_AUDIO_CHUNK_SECONDS)?;
         let total_chunks = input_chunks.len();
         let mut output_chunks = Vec::with_capacity(total_chunks);
 
         for (index, audio_bytes) in input_chunks.into_iter().enumerate() {
-            self.patch_job(&running.job_id, |job| {
-                job.stage = format!("transcribingChunk:{}/{}", index + 1, total_chunks);
-                job.progress = chunk_progress(index, total_chunks, 0);
-                job.updated_at = Utc::now();
-            })?;
-            let text = transcribe_audio_bytes(&settings.backend.asr, &audio_bytes, "wav")?;
+            if let Some(cancelled) = self.cancelled_job(&running.job_id)? {
+                return Ok(cancelled);
+            }
+            self.patch_job_and_emit(
+                &running.job_id,
+                |job| {
+                    job.stage = format!("transcribingChunk:{}/{}", index + 1, total_chunks);
+                    job.progress = chunk_progress(index, total_chunks, 0);
+                    job.updated_at = Utc::now();
+                },
+                on_update,
+            )?;
+            let text = transcribe_audio_bytes_async(&settings.backend.asr, &audio_bytes, "wav")?;
 
-            self.patch_job(&running.job_id, |job| {
-                job.stage = format!("synthesizingChunk:{}/{}", index + 1, total_chunks);
-                job.progress = chunk_progress(index, total_chunks, 1);
-                job.updated_at = Utc::now();
-            })?;
+            if let Some(cancelled) = self.cancelled_job(&running.job_id)? {
+                return Ok(cancelled);
+            }
+            self.patch_job_and_emit(
+                &running.job_id,
+                |job| {
+                    job.stage = format!("synthesizingChunk:{}/{}", index + 1, total_chunks);
+                    job.progress = chunk_progress(index, total_chunks, 1);
+                    job.updated_at = Utc::now();
+                },
+                on_update,
+            )?;
             let result = synthesize_text(
                 &settings.backend.tts,
                 OfflineTtsRequest {
@@ -243,24 +296,102 @@ impl OfflineJobManager {
                     sample_rate: settings.runtime.default_sample_rate,
                 },
             )?;
+            ensure_wav_audio(
+                &running.output_format,
+                &result.audio_bytes,
+                result.content_type.as_deref(),
+            )?;
             output_chunks.push(result.audio_bytes);
         }
 
-        self.patch_job(&running.job_id, |job| {
-            job.stage = "mergingChunks".into();
-            job.progress = 88;
-            job.updated_at = Utc::now();
-        })?;
+        if let Some(cancelled) = self.cancelled_job(&running.job_id)? {
+            return Ok(cancelled);
+        }
+        self.patch_job_and_emit(
+            &running.job_id,
+            |job| {
+                job.stage = "mergingChunks".into();
+                job.progress = 88;
+                job.updated_at = Utc::now();
+            },
+            on_update,
+        )?;
         let merged_audio = merge_wav_chunks(&output_chunks)?;
-        self.complete_with_audio_bytes(running, cache, &merged_audio)
+        self.complete_with_audio_bytes(running, cache, &merged_audio, on_update)
     }
 
-    fn run_text_job(&self, running: &OfflineJob, settings: &AppSettings, cache: &AssetCache) -> AppResult<OfflineJob> {
-        self.patch_job(&running.job_id, |job| {
-            job.stage = "synthesizing".into();
-            job.progress = 45;
-            job.updated_at = Utc::now();
-        })?;
+    fn run_short_audio_job<F>(
+        &self,
+        running: &OfflineJob,
+        settings: &AppSettings,
+        cache: &AssetCache,
+        on_update: &F,
+    ) -> AppResult<OfflineJob>
+    where
+        F: Fn(OfflineJob),
+    {
+        self.patch_job_and_emit(
+            &running.job_id,
+            |job| {
+                job.stage = "transcribing".into();
+                job.progress = 20;
+                job.updated_at = Utc::now();
+            },
+            on_update,
+        )?;
+        let audio_bytes =
+            std::fs::read(&running.input_ref).map_err(|source| AppError::io("reading offline audio input", source))?;
+        let text = transcribe_audio_bytes(&settings.backend.asr, &audio_bytes, "wav")?;
+
+        if let Some(cancelled) = self.cancelled_job(&running.job_id)? {
+            return Ok(cancelled);
+        }
+        self.patch_job_and_emit(
+            &running.job_id,
+            |job| {
+                job.stage = "synthesizing".into();
+                job.progress = 60;
+                job.updated_at = Utc::now();
+            },
+            on_update,
+        )?;
+        let result = synthesize_text(
+            &settings.backend.tts,
+            OfflineTtsRequest {
+                text,
+                voice_name: running.voice_name.clone(),
+                runtime_params: running.runtime_params.clone(),
+                output_format: running.output_format.clone(),
+                sample_rate: settings.runtime.default_sample_rate,
+            },
+        )?;
+        ensure_wav_audio(
+            &running.output_format,
+            &result.audio_bytes,
+            result.content_type.as_deref(),
+        )?;
+        self.complete_with_audio_bytes(running, cache, &result.audio_bytes, on_update)
+    }
+
+    fn run_text_job<F>(
+        &self,
+        running: &OfflineJob,
+        settings: &AppSettings,
+        cache: &AssetCache,
+        on_update: &F,
+    ) -> AppResult<OfflineJob>
+    where
+        F: Fn(OfflineJob),
+    {
+        self.patch_job_and_emit(
+            &running.job_id,
+            |job| {
+                job.stage = "synthesizing".into();
+                job.progress = 45;
+                job.updated_at = Utc::now();
+            },
+            on_update,
+        )?;
         let result = synthesize_text(
             &settings.backend.tts,
             OfflineTtsRequest {
@@ -271,38 +402,66 @@ impl OfflineJobManager {
                 sample_rate: settings.runtime.default_sample_rate,
             },
         )?;
-        self.complete_with_audio_bytes(running, cache, &result.audio_bytes)
+        ensure_wav_audio(
+            &running.output_format,
+            &result.audio_bytes,
+            result.content_type.as_deref(),
+        )?;
+        self.complete_with_audio_bytes(running, cache, &result.audio_bytes, on_update)
     }
 
-    fn complete_with_audio_bytes(
+    fn complete_with_audio_bytes<F>(
         &self,
         running: &OfflineJob,
         cache: &AssetCache,
         audio_bytes: &[u8],
-    ) -> AppResult<OfflineJob> {
-        self.patch_job(&running.job_id, |job| {
-            job.stage = "writingArtifact".into();
-            job.progress = 90;
-            job.updated_at = Utc::now();
-        })?;
+        on_update: &F,
+    ) -> AppResult<OfflineJob>
+    where
+        F: Fn(OfflineJob),
+    {
+        if let Some(cancelled) = self.cancelled_job(&running.job_id)? {
+            return Ok(cancelled);
+        }
+        self.patch_job_and_emit(
+            &running.job_id,
+            |job| {
+                job.stage = "writingArtifact".into();
+                job.progress = 90;
+                job.updated_at = Utc::now();
+            },
+            on_update,
+        )?;
         let artifact = cache.write_offline_artifact_bytes(&running.job_id, &running.output_format, audio_bytes)?;
-        self.patch_job(&running.job_id, |job| {
-            job.local_artifact_path = Some(artifact.path.to_string_lossy().into_owned());
-            job.error_summary = None;
-            job.status = OfflineJobStatus::Completed;
-            job.stage = "completed".into();
-            job.progress = 100;
-            job.updated_at = Utc::now();
-        })
+        self.patch_job_and_emit(
+            &running.job_id,
+            |job| {
+                job.local_artifact_path = Some(artifact.path.to_string_lossy().into_owned());
+                job.error_summary = None;
+                job.status = OfflineJobStatus::Completed;
+                job.stage = "completed".into();
+                job.progress = 100;
+                job.updated_at = Utc::now();
+            },
+            on_update,
+        )
     }
 
     fn fail_running_job(&self, job_id: &str, message: String) -> AppResult<OfflineJob> {
+        if let Some(cancelled) = self.cancelled_job(job_id)? {
+            return Ok(cancelled);
+        }
         self.patch_job(job_id, |job| {
             job.error_summary = Some(message);
             job.status = OfflineJobStatus::Failed;
             job.stage = "failed".into();
             job.updated_at = Utc::now();
         })
+    }
+
+    fn cancelled_job(&self, job_id: &str) -> AppResult<Option<OfflineJob>> {
+        let job = self.get_job(job_id)?;
+        Ok((job.status == OfflineJobStatus::Cancelled).then_some(job))
     }
 
     pub fn cancel_job(&self, job_id: &str) -> AppResult<OfflineJob> {
@@ -313,25 +472,74 @@ impl OfflineJobManager {
         })
     }
 
-    pub fn retry_job(&self, job_id: &str) -> AppResult<OfflineJob> {
-        self.patch_job(job_id, |job| match job.status {
-            OfflineJobStatus::Failed | OfflineJobStatus::Cancelled => {
-                job.error_summary = None;
-                job.local_artifact_path = None;
-                job.status = OfflineJobStatus::Created;
-                job.stage = "created".into();
-                job.progress = 0;
-                job.updated_at = Utc::now();
-            }
-            _ => {}
-        })
-        .and_then(|job| match job.status {
-            OfflineJobStatus::Created => Ok(job),
-            _ => Err(AppError::offline_job(format!(
+    pub fn retry_job(&self, job_id: &str, cache: &AssetCache) -> AppResult<OfflineJob> {
+        let current = self.get_job(job_id)?;
+        if !matches!(
+            current.status,
+            OfflineJobStatus::Failed | OfflineJobStatus::Cancelled | OfflineJobStatus::Completed
+        ) {
+            return Err(AppError::offline_job(format!(
                 "cannot retry offline job from {:?}",
-                job.status
-            ))),
+                current.status
+            )));
+        }
+        remove_file_if_present(current.local_artifact_path.as_deref())?;
+        let artifact = cache.offline_artifact_path(&current.job_id, &current.output_format)?;
+        remove_file_if_present(artifact.path.to_str())?;
+        self.patch_job(job_id, |job| {
+            job.error_summary = None;
+            job.local_artifact_path = None;
+            job.status = OfflineJobStatus::Created;
+            job.stage = "created".into();
+            job.progress = 0;
+            job.updated_at = Utc::now();
         })
+    }
+
+    pub fn clear_jobs(&self, cache: &AssetCache) -> AppResult<Vec<OfflineJob>> {
+        let mut jobs = self.jobs.write().expect("offline job manager lock poisoned");
+        let removed = jobs.values().cloned().collect();
+        jobs.clear();
+        self.persist_locked(&jobs)?;
+        cache.clear_offline_audio_files()?;
+        Ok(removed)
+    }
+
+    pub fn delete_job(&self, job_id: &str, cache: &AssetCache) -> AppResult<OfflineJob> {
+        let mut jobs = self.jobs.write().expect("offline job manager lock poisoned");
+        let removed = jobs
+            .remove(job_id)
+            .ok_or_else(|| AppError::offline_job(format!("offline job not found: {job_id}")))?;
+        self.persist_locked(&jobs)?;
+        drop(jobs);
+
+        remove_file_if_present(removed.local_artifact_path.as_deref())?;
+        let artifact = cache.offline_artifact_path(&removed.job_id, &removed.output_format)?;
+        remove_file_if_present(artifact.path.to_str())?;
+        if matches!(removed.input_type, OfflineJobInputType::Audio) {
+            remove_file_if_present(Some(&removed.input_ref))?;
+        }
+        Ok(removed)
+    }
+
+    pub fn copy_artifact_to(&self, job_id: &str, target_path: impl Into<PathBuf>) -> AppResult<PathBuf> {
+        let job = self.get_job(job_id)?;
+        if job.status != OfflineJobStatus::Completed {
+            return Err(AppError::offline_job("only completed offline jobs can be downloaded"));
+        }
+        let source_path = job
+            .local_artifact_path
+            .ok_or_else(|| AppError::offline_job("completed offline job has no local artifact"))?;
+        let target_path = target_path.into();
+        if target_path.as_os_str().is_empty() {
+            return Err(AppError::offline_job("download target path is required"));
+        }
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|source| AppError::io("creating download target directory", source))?;
+        }
+        std::fs::copy(&source_path, &target_path).map_err(|source| AppError::io("copying offline artifact", source))?;
+        Ok(target_path)
     }
 
     pub fn complete_job(
@@ -396,6 +604,20 @@ impl OfflineJobManager {
         let next = job.clone();
         self.persist_locked(&jobs)?;
         Ok(next)
+    }
+
+    fn patch_job_and_emit<F>(
+        &self,
+        job_id: &str,
+        patch: impl FnOnce(&mut OfflineJob),
+        on_update: &F,
+    ) -> AppResult<OfflineJob>
+    where
+        F: Fn(OfflineJob),
+    {
+        let job = self.patch_job(job_id, patch)?;
+        on_update(job.clone());
+        Ok(job)
     }
 
     fn persist_locked(&self, jobs: &BTreeMap<String, OfflineJob>) -> AppResult<()> {
@@ -467,6 +689,21 @@ fn validate_input_format(value: &str) -> AppResult<()> {
     }
 }
 
+fn ensure_wav_audio(output_format: &str, audio_bytes: &[u8], content_type: Option<&str>) -> AppResult<()> {
+    if output_format != "wav" || is_wav_bytes(audio_bytes) {
+        return Ok(());
+    }
+
+    let content_type = content_type.unwrap_or("unknown");
+    Err(AppError::offline_job(format!(
+        "FunSpeech TTS returned non-WAV audio for wav output (content-type: {content_type})"
+    )))
+}
+
+fn is_wav_bytes(audio_bytes: &[u8]) -> bool {
+    audio_bytes.len() >= 12 && &audio_bytes[0..4] == b"RIFF" && &audio_bytes[8..12] == b"WAVE"
+}
+
 fn default_submission_endpoint(endpoints: &OfflineEndpoints, input_type: &OfflineJobInputType) -> String {
     match input_type {
         OfflineJobInputType::Audio => endpoints.asr_url.clone(),
@@ -503,6 +740,27 @@ fn split_wav_file(path: &str, chunk_seconds: usize) -> AppResult<Vec<Vec<u8>>> {
         .chunks(samples_per_chunk)
         .map(|chunk| write_wav_samples(chunk, channels as u16, source_spec.sample_rate))
         .collect()
+}
+
+fn wav_duration_seconds(path: &str) -> AppResult<f64> {
+    let reader = hound::WavReader::open(path)
+        .map_err(|error| AppError::offline_job(format!("failed to open wav input: {error}")))?;
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate as f64;
+    if sample_rate <= 0.0 {
+        return Err(AppError::offline_job("wav input sample rate must be greater than 0"));
+    }
+    Ok(reader.duration() as f64 / sample_rate)
+}
+
+fn remove_file_if_present(path: Option<&str>) -> AppResult<()> {
+    if let Some(path) = path {
+        let path = Path::new(path);
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|source| AppError::io("removing stale offline artifact", source))?;
+        }
+    }
+    Ok(())
 }
 
 fn merge_wav_chunks(chunks: &[Vec<u8>]) -> AppResult<Vec<u8>> {
@@ -603,8 +861,8 @@ mod tests {
     };
 
     use super::{
-        merge_wav_chunks, split_wav_file, CompleteOfflineJobRequest, CreateOfflineAudioJobRequest,
-        CreateOfflineTextJobRequest, FailOfflineJobRequest, OfflineJobManager,
+        ensure_wav_audio, merge_wav_chunks, split_wav_file, wav_duration_seconds, CompleteOfflineJobRequest,
+        CreateOfflineAudioJobRequest, CreateOfflineTextJobRequest, FailOfflineJobRequest, OfflineJobManager,
     };
 
     fn cache() -> AssetCache {
@@ -734,6 +992,95 @@ mod tests {
     }
 
     #[test]
+    fn offline_manager_clears_records_and_audio_files() {
+        let manager = OfflineJobManager::default();
+        let settings = AppSettings::default();
+        let cache = cache();
+        let created = manager
+            .create_text_job(
+                CreateOfflineTextJobRequest {
+                    text: "hello".into(),
+                    voice_name: "narrator".into(),
+                    runtime_params: RuntimeParams::default(),
+                    output_format: Some("wav".into()),
+                },
+                &settings,
+            )
+            .unwrap();
+        let artifact = cache
+            .write_offline_artifact_bytes(&created.job_id, "wav", b"fake wav")
+            .unwrap();
+        manager
+            .complete_job(
+                &created.job_id,
+                CompleteOfflineJobRequest {
+                    artifact_url: None,
+                    local_artifact_path: Some(artifact.path.to_string_lossy().into_owned()),
+                },
+                &cache,
+            )
+            .unwrap();
+
+        let removed = manager.clear_jobs(&cache).unwrap();
+
+        assert_eq!(removed.len(), 1);
+        assert!(manager.list_jobs().is_empty());
+        assert!(!artifact.path.exists());
+    }
+
+    #[test]
+    fn offline_manager_deletes_one_record_and_audio_files() {
+        let manager = OfflineJobManager::default();
+        let settings = AppSettings::default();
+        let cache = cache();
+        let audio = manager
+            .create_audio_job(
+                CreateOfflineAudioJobRequest {
+                    input_ref: None,
+                    file_name: Some("input.wav".into()),
+                    input_bytes: Some(b"fake input wav".to_vec()),
+                    voice_name: "narrator".into(),
+                    runtime_params: RuntimeParams::default(),
+                    output_format: Some("wav".into()),
+                },
+                &settings,
+                &cache,
+            )
+            .unwrap();
+        let kept = manager
+            .create_text_job(
+                CreateOfflineTextJobRequest {
+                    text: "keep me".into(),
+                    voice_name: "narrator".into(),
+                    runtime_params: RuntimeParams::default(),
+                    output_format: Some("wav".into()),
+                },
+                &settings,
+            )
+            .unwrap();
+        let completed = manager
+            .complete_job(
+                &audio.job_id,
+                CompleteOfflineJobRequest {
+                    artifact_url: None,
+                    local_artifact_path: None,
+                },
+                &cache,
+            )
+            .unwrap();
+        let input_path = completed.input_ref.clone();
+        let artifact_path = completed.local_artifact_path.clone().unwrap();
+
+        let removed = manager.delete_job(&audio.job_id, &cache).unwrap();
+
+        assert_eq!(removed.job_id, audio.job_id);
+        assert!(manager.get_job(&audio.job_id).is_err());
+        assert!(manager.get_job(&kept.job_id).is_ok());
+        assert!(!std::path::PathBuf::from(input_path).exists());
+        assert!(!std::path::PathBuf::from(artifact_path).exists());
+    }
+
+    #[test]
     fn offline_manager_runs_fails_retries_and_completes_jobs() {
         let manager = OfflineJobManager::default();
         let settings = AppSettings::default();
@@ -765,7 +1112,7 @@ mod tests {
         assert_eq!(failed.stage, "failed");
         assert_eq!(failed.error_summary.as_deref(), Some("backend failed"));
 
-        let retried = manager.retry_job(&created.job_id).unwrap();
+        let retried = manager.retry_job(&created.job_id, &cache).unwrap();
         assert_eq!(retried.status, OfflineJobStatus::Created);
         assert!(retried.error_summary.is_none());
 
@@ -782,6 +1129,80 @@ mod tests {
         assert_eq!(completed.status, OfflineJobStatus::Completed);
         assert_eq!(completed.progress, 100);
         assert!(completed.local_artifact_path.unwrap().ends_with(".wav"));
+    }
+
+    #[test]
+    fn retry_completed_job_reuses_record_and_removes_previous_artifact() {
+        let manager = OfflineJobManager::default();
+        let settings = AppSettings::default();
+        let cache = cache();
+        let created = manager
+            .create_text_job(
+                CreateOfflineTextJobRequest {
+                    text: "hello".into(),
+                    voice_name: "narrator".into(),
+                    runtime_params: RuntimeParams::default(),
+                    output_format: Some("wav".into()),
+                },
+                &settings,
+            )
+            .unwrap();
+        let completed = manager
+            .complete_with_audio_bytes(&created, &cache, b"old wav", &|_| {})
+            .unwrap();
+        let old_path = completed.local_artifact_path.clone().unwrap();
+
+        let retried = manager.retry_job(&created.job_id, &cache).unwrap();
+
+        assert_eq!(retried.job_id, created.job_id);
+        assert_eq!(retried.status, OfflineJobStatus::Created);
+        assert_eq!(manager.list_jobs().len(), 1);
+        assert!(!std::path::PathBuf::from(old_path).exists());
+    }
+
+    #[test]
+    fn offline_manager_copies_completed_artifact_to_selected_path() {
+        let manager = OfflineJobManager::default();
+        let settings = AppSettings::default();
+        let cache = cache();
+        let created = manager
+            .create_text_job(
+                CreateOfflineTextJobRequest {
+                    text: "hello".into(),
+                    voice_name: "narrator".into(),
+                    runtime_params: RuntimeParams::default(),
+                    output_format: Some("wav".into()),
+                },
+                &settings,
+            )
+            .unwrap();
+        manager
+            .complete_with_audio_bytes(&created, &cache, b"new wav", &|_| {})
+            .unwrap();
+        let target = std::env::temp_dir().join(format!("voice-cloner-download-{}.wav", created.job_id));
+
+        let copied = manager.copy_artifact_to(&created.job_id, &target).unwrap();
+
+        assert_eq!(copied, target);
+        assert_eq!(std::fs::read(copied).unwrap(), b"new wav");
+    }
+
+    #[test]
+    fn wav_duration_seconds_uses_sample_rate_and_channels() {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("voice-cloner-duration-{unique}.wav"));
+        write_test_wav(&path, &[0.1, 0.2, 0.3, 0.4], 2, 2);
+
+        let duration = wav_duration_seconds(path.to_str().unwrap()).unwrap();
+
+        assert!((duration - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ensure_wav_audio_rejects_non_wav_tts_bytes() {
+        let error = ensure_wav_audio("wav", b"not-a-riff-file", Some("audio/mpeg")).unwrap_err();
+
+        assert!(error.to_string().contains("non-WAV audio"));
     }
 
     #[test]

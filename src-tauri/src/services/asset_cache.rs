@@ -130,6 +130,12 @@ impl AssetCache {
         Ok(artifact)
     }
 
+    pub fn clear_offline_audio_files(&self) -> AppResult<()> {
+        remove_dir_contents(&self.offline_exports_dir, "clearing offline exports")?;
+        remove_dir_contents(&self.offline_inputs_dir, "clearing offline inputs")?;
+        Ok(())
+    }
+
     pub fn voice_design_artifact_path(
         &self,
         draft_id: &str,
@@ -180,6 +186,13 @@ fn copy_if_needed(source_path: PathBuf, target_path: &PathBuf, context: &'static
         std::fs::copy(&source_path, target_path).map_err(|source| AppError::io(context, source))?;
     }
     Ok(())
+}
+
+fn remove_dir_contents(path: &PathBuf, context: &'static str) -> AppResult<()> {
+    if path.exists() {
+        std::fs::remove_dir_all(path).map_err(|source| AppError::io(context, source))?;
+    }
+    std::fs::create_dir_all(path).map_err(|source| AppError::io(context, source))
 }
 
 fn sanitize_path_segment(value: &str) -> String {

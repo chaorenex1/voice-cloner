@@ -10,6 +10,7 @@
     "core:app:default",
     "core:app:allow-name",
     "core:app:allow-version",
-    "core:app:allow-tauri-version"
+    "core:app:allow-tauri-version",
+    "dialog:default"
   ]
 }

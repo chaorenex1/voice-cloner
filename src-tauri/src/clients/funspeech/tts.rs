@@ -9,6 +9,8 @@ use crate::{
     domain::{runtime_params::RuntimeParams, settings::BackendConfig},
 };
 
+const OFFLINE_TTS_TIMEOUT_FLOOR_MS: u64 = 300_000;
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RealtimeTtsEndpoint {
@@ -54,9 +56,27 @@ pub fn synthesize_text(config: &BackendConfig, request: OfflineTtsRequest) -> Ap
         return Err(AppError::offline_job("voiceName is required for FunSpeech TTS"));
     }
 
+    let sample_rate = funspeech_tts_sample_rate(request.sample_rate);
+    let mut result = send_tts_request(config, &request, text, sample_rate)?;
+    if request.output_format.eq_ignore_ascii_case("wav")
+        && sample_rate != FUNSPEECH_PRESET_SAMPLE_RATE
+        && looks_like_tiny_wav(&result.audio_bytes)
+    {
+        result = send_tts_request(config, &request, text, FUNSPEECH_PRESET_SAMPLE_RATE)?;
+    }
+
+    Ok(result)
+}
+
+fn send_tts_request(
+    config: &BackendConfig,
+    request: &OfflineTtsRequest,
+    text: &str,
+    sample_rate: u32,
+) -> AppResult<OfflineTtsResult> {
     let endpoint = rest_url(&config.base_url, "/stream/v1/tts");
     let response = Client::builder()
-        .timeout(Duration::from_millis(config.timeout_ms.max(1)))
+        .timeout(Duration::from_millis(offline_tts_timeout_ms(config)))
         .build()
         .map_err(tts_http_error)?
         .post(endpoint)
@@ -64,7 +84,7 @@ pub fn synthesize_text(config: &BackendConfig, request: OfflineTtsRequest) -> Ap
             "text": text,
             "voice": request.voice_name,
             "format": request.output_format,
-            "sample_rate": funspeech_tts_sample_rate(request.sample_rate),
+            "sample_rate": sample_rate,
             "speech_rate": json_number(&request.runtime_params, "speechRate")
                 .or_else(|| json_number(&request.runtime_params, "speech_rate"))
                 .unwrap_or(0.0),
@@ -100,12 +120,28 @@ fn rest_url(base_url: &str, path: &str) -> String {
     format!("{}{}", base_url.trim_end_matches('/'), path)
 }
 
+const FUNSPEECH_PRESET_SAMPLE_RATE: u32 = 22_050;
+
 fn funspeech_tts_sample_rate(sample_rate: u32) -> u32 {
     const SUPPORTED: [u32; 4] = [8_000, 16_000, 22_050, 24_000];
+    if sample_rate > 24_000 {
+        return FUNSPEECH_PRESET_SAMPLE_RATE;
+    }
     SUPPORTED
         .into_iter()
         .min_by_key(|supported| supported.abs_diff(sample_rate))
-        .unwrap_or(24_000)
+        .unwrap_or(FUNSPEECH_PRESET_SAMPLE_RATE)
+}
+
+fn looks_like_tiny_wav(audio_bytes: &[u8]) -> bool {
+    audio_bytes.len() >= 12
+        && &audio_bytes[0..4] == b"RIFF"
+        && &audio_bytes[8..12] == b"WAVE"
+        && audio_bytes.len() < 2048
+}
+
+fn offline_tts_timeout_ms(config: &BackendConfig) -> u64 {
+    config.timeout_ms.max(OFFLINE_TTS_TIMEOUT_FLOOR_MS)
 }
 
 fn json_number(params: &RuntimeParams, key: &str) -> Option<f64> {
@@ -131,14 +167,20 @@ fn websocket_base_url(base: &str) -> String {
 }
 
 fn tts_http_error(error: reqwest::Error) -> AppError {
-    AppError::offline_job(format!("FunSpeech TTS request failed: {error}"))
+    let mut message = format!("FunSpeech TTS request failed: {error}");
+    let mut source = std::error::Error::source(&error);
+    while let Some(error) = source {
+        message.push_str(&format!("; caused by: {error}"));
+        source = error.source();
+    }
+    AppError::offline_job(message)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::domain::settings::BackendConfig;
 
-    use super::{funspeech_tts_sample_rate, RealtimeTtsEndpoint};
+    use super::{funspeech_tts_sample_rate, offline_tts_timeout_ms, RealtimeTtsEndpoint};
 
     #[test]
     fn realtime_tts_endpoint_maps_http_base_to_ws_path() {
@@ -152,7 +194,27 @@ mod tests {
 
     #[test]
     fn funspeech_tts_sample_rate_uses_supported_nearest_rate() {
-        assert_eq!(funspeech_tts_sample_rate(48_000), 24_000);
+        assert_eq!(funspeech_tts_sample_rate(48_000), 22_050);
+        assert_eq!(funspeech_tts_sample_rate(24_000), 24_000);
         assert_eq!(funspeech_tts_sample_rate(16_000), 16_000);
+    }
+
+    #[test]
+    fn tiny_wav_detection_catches_empty_builtin_voice_outputs() {
+        let tiny_wav = b"RIFFJ\0\0\0WAVEfmt ";
+
+        assert!(super::looks_like_tiny_wav(tiny_wav));
+        assert!(!super::looks_like_tiny_wav(&vec![1; 4096]));
+    }
+
+    #[test]
+    fn offline_tts_timeout_uses_long_running_floor() {
+        let mut config = BackendConfig::funspeech_default();
+        config.timeout_ms = 30_000;
+
+        assert_eq!(offline_tts_timeout_ms(&config), 300_000);
+
+        config.timeout_ms = 600_000;
+        assert_eq!(offline_tts_timeout_ms(&config), 600_000);
     }
 }

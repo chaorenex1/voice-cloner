@@ -1,9 +1,14 @@
 import { computed, reactive } from 'vue';
+import { save } from '@tauri-apps/plugin-dialog';
 import {
   cancelOfflineJob,
+  clearOfflineJobs,
   createOfflineAudioJob,
   createOfflineTextJob,
+  deleteOfflineJob,
+  downloadOfflineJob,
   listenOfflineJobPreviewFinished,
+  listenOfflineJobUpdated,
   listOfflineJobs,
   retryOfflineJob,
   startOfflineJob,
@@ -39,13 +44,13 @@ export interface OfflineState {
 
 const demoVoices: VoiceSummary[] = [
   {
-    voiceName: 'preview',
-    displayName: '预览音色',
-    source: 'remote',
-    tags: ['预览'],
+    voiceName: '中文女',
+    displayName: '中文女',
+    source: 'preset',
+    tags: ['内置'],
     hasReferenceAudio: false,
     updatedAt: 'preview',
-    referenceTextPreview: '浏览器预览模式',
+    referenceTextPreview: 'FunSpeech 内置音色',
     syncStatus: 'synced',
   },
 ];
@@ -133,6 +138,7 @@ function upsertJob(job: OfflineJob): void {
 }
 
 let previewFinishListenerStarted = false;
+let jobUpdateListenerStarted = false;
 
 function startPreviewFinishListener(): void {
   if (previewFinishListenerStarted) {
@@ -151,8 +157,25 @@ function startPreviewFinishListener(): void {
   });
 }
 
+function startJobUpdateListener(): void {
+  if (jobUpdateListenerStarted) {
+    return;
+  }
+
+  jobUpdateListenerStarted = true;
+  void listenOfflineJobUpdated((job) => {
+    upsertJob(job);
+    state.lastMessage = messageForJob(job);
+    state.lastError = job.status === 'failed' ? job.errorSummary : null;
+  }).catch((error) => {
+    jobUpdateListenerStarted = false;
+    state.lastMessage = `离线任务事件监听失败：${messageFromError(error)}`;
+  });
+}
+
 export function useOfflineStore() {
   startPreviewFinishListener();
+  startJobUpdateListener();
 
   const selectedVoice = computed(() =>
     state.voices.find((voice) => voice.voiceName === state.selectedVoiceName)
@@ -176,6 +199,10 @@ export function useOfflineStore() {
 
   function canPreviewJob(job: OfflineJob | null): boolean {
     return job?.status === 'completed' && !!job.localArtifactPath && job.outputFormat === 'wav';
+  }
+
+  function canDownloadJob(job: OfflineJob | null): boolean {
+    return !!job?.localArtifactPath && job.status === 'completed';
   }
 
   async function load(): Promise<void> {
@@ -235,7 +262,7 @@ export function useOfflineStore() {
       }
 
       upsertJob(created);
-      state.lastMessage = '任务已创建，正在处理...';
+      state.lastMessage = '任务已创建，正在后台处理...';
       const started = await startOfflineJob(created.jobId);
       upsertJob(started);
       state.lastMessage = messageForJob(started);
@@ -264,6 +291,78 @@ export function useOfflineStore() {
       }
     } catch (error) {
       state.lastError = messageFromError(error);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function clearHistory(): Promise<void> {
+    state.busy = true;
+    state.lastError = null;
+    try {
+      if (state.playingJobId) {
+        await stopOfflineJobPreview();
+      }
+      const result = await clearOfflineJobs();
+      state.jobs = [];
+      state.currentJob = null;
+      state.playingJobId = null;
+      state.lastMessage = `已清理 ${result.removedCount} 条离线记录和本地音频文件`;
+    } catch (error) {
+      state.lastError = messageFromError(error);
+      state.lastMessage = '清理离线记录失败';
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function deleteJob(job: OfflineJob): Promise<void> {
+    state.busy = true;
+    state.lastError = null;
+    try {
+      if (state.playingJobId === job.jobId) {
+        await stopOfflineJobPreview();
+      }
+      const result = await deleteOfflineJob(job.jobId);
+      state.jobs = state.jobs.filter((item) => item.jobId !== result.removed.jobId);
+      if (state.currentJob?.jobId === result.removed.jobId) {
+        state.currentJob = state.jobs[0] ?? null;
+      }
+      if (state.playingJobId === result.removed.jobId) {
+        state.playingJobId = null;
+      }
+      state.lastMessage = `已删除离线记录和音频：${result.removed.jobId}`;
+    } catch (error) {
+      state.lastError = messageFromError(error);
+      state.lastMessage = '删除离线记录失败';
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function download(job: OfflineJob): Promise<void> {
+    if (!canDownloadJob(job)) {
+      state.lastError = '只有已完成且存在本地音频文件的离线任务可以下载';
+      return;
+    }
+
+    const targetPath = await save({
+      defaultPath: suggestedDownloadName(job),
+      filters: [{ name: 'WAV audio', extensions: ['wav'] }],
+    });
+    if (!targetPath) {
+      state.lastMessage = '已取消下载';
+      return;
+    }
+
+    state.busy = true;
+    state.lastError = null;
+    try {
+      const result = await downloadOfflineJob(job.jobId, targetPath);
+      state.lastMessage = `已保存到：${result.targetPath}`;
+    } catch (error) {
+      state.lastError = messageFromError(error);
+      state.lastMessage = '下载离线音频失败';
     } finally {
       state.busy = false;
     }
@@ -328,13 +427,17 @@ export function useOfflineStore() {
     cancel,
     selectJob,
     canPreviewJob,
+    canDownloadJob,
     togglePreview,
+    clearHistory,
+    deleteJob,
+    download,
   };
 }
 
 function messageForJob(job: OfflineJob): string {
   if (job.status === 'completed') {
-    return `离线任务已完成：${job.localArtifactPath ?? '等待导出路径'}`;
+    return '离线任务已完成，可试听或下载';
   }
   if (job.status === 'failed') {
     return job.errorSummary ?? '离线任务失败';
@@ -346,4 +449,12 @@ function messageForJob(job: OfflineJob): string {
     return '任务已取消';
   }
   return '任务等待开始';
+}
+
+function suggestedDownloadName(job: OfflineJob): string {
+  const baseName = (job.inputFileName ?? job.jobId)
+    .replace(/\.[^.]+$/, '')
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .trim();
+  return `${baseName || job.jobId}-${job.jobId}.wav`;
 }

@@ -64,13 +64,11 @@ function invalidateCustomVoiceCache(): void {
 }
 
 function voiceNameFromDisplayName(displayName: string): string {
-  return (
-    displayName
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/gi, '-')
-      .replace(/^-+|-+$/g, '') || `voice-${Date.now()}`
-  );
+  const voiceName = displayName.trim();
+  if (!voiceName) {
+    throw new Error('voiceName is required');
+  }
+  return voiceName;
 }
 
 function syncStatusFromProfile(status: CustomVoiceProfileView['syncStatus']): VoiceSyncStatus {
