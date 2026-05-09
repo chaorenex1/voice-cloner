@@ -34,7 +34,11 @@ pub struct AppState {
 impl AppState {
     pub fn new(paths: AppPaths) -> crate::app::error::AppResult<Self> {
         let settings = SettingsManager::new(paths.settings_file());
-        let asset_cache = AssetCache::new(paths.offline_exports_dir(), paths.voice_design_artifacts_dir())?;
+        let asset_cache = AssetCache::new_with_inputs(
+            paths.offline_exports_dir(),
+            paths.offline_inputs_dir(),
+            paths.voice_design_artifacts_dir(),
+        )?;
         let voice_library = VoiceLibrary::new(paths.custom_voices_dir())?;
         let voice_sync = VoiceSyncManager::new(paths.sync_state_file());
 
@@ -42,6 +46,7 @@ impl AppState {
         let virtual_mic = SelectableVirtualMicAdapter::default();
         virtual_mic.set_target_device_id(loaded_settings.device.virtual_mic_device_id.clone());
         voice_sync.load_or_default()?;
+        let offline_jobs = OfflineJobManager::new(paths.offline_jobs_file())?;
 
         Ok(Self {
             paths,
@@ -52,7 +57,7 @@ impl AppState {
             virtual_mic: Arc::new(virtual_mic),
             realtime_streams: Arc::new(RealtimeStreamManager::default()),
             sessions: Arc::new(SessionManager::default()),
-            offline_jobs: Arc::new(OfflineJobManager::default()),
+            offline_jobs: Arc::new(offline_jobs),
             asset_cache: Arc::new(asset_cache),
             voice_design: Arc::new(VoiceDesignManager::default()),
             voice_library: Arc::new(voice_library),

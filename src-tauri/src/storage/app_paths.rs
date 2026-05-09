@@ -13,10 +13,12 @@ pub struct AppPaths {
     settings_dir: PathBuf,
     cache_dir: PathBuf,
     preset_preview_dir: PathBuf,
+    offline_inputs_dir: PathBuf,
     voice_design_artifacts_dir: PathBuf,
     offline_exports_dir: PathBuf,
     library_dir: PathBuf,
     custom_voices_dir: PathBuf,
+    offline_jobs_file: PathBuf,
     sync_state_file: PathBuf,
 }
 
@@ -38,10 +40,12 @@ impl AppPaths {
         let settings_dir = root.join("settings");
         let cache_dir = root.join("cache");
         let preset_preview_dir = cache_dir.join("preset-preview");
+        let offline_inputs_dir = cache_dir.join("offline-inputs");
         let voice_design_artifacts_dir = cache_dir.join("voice-design-artifacts");
         let offline_exports_dir = cache_dir.join("offline-exports");
         let library_dir = root.join("library");
         let custom_voices_dir = library_dir.join("custom-voices");
+        let offline_jobs_file = library_dir.join("offline-jobs.json");
         let sync_state_file = library_dir.join("sync-state.json");
 
         let paths = Self {
@@ -49,10 +53,12 @@ impl AppPaths {
             settings_dir,
             cache_dir,
             preset_preview_dir,
+            offline_inputs_dir,
             voice_design_artifacts_dir,
             offline_exports_dir,
             library_dir,
             custom_voices_dir,
+            offline_jobs_file,
             sync_state_file,
         };
         paths.ensure()?;
@@ -64,6 +70,7 @@ impl AppPaths {
             &self.root,
             &self.settings_dir,
             &self.preset_preview_dir,
+            &self.offline_inputs_dir,
             &self.voice_design_artifacts_dir,
             &self.offline_exports_dir,
             &self.library_dir,
@@ -86,6 +93,10 @@ impl AppPaths {
         self.preset_preview_dir.clone()
     }
 
+    pub fn offline_inputs_dir(&self) -> PathBuf {
+        self.offline_inputs_dir.clone()
+    }
+
     pub fn voice_design_artifacts_dir(&self) -> PathBuf {
         self.voice_design_artifacts_dir.clone()
     }
@@ -96,6 +107,10 @@ impl AppPaths {
 
     pub fn custom_voices_dir(&self) -> PathBuf {
         self.custom_voices_dir.clone()
+    }
+
+    pub fn offline_jobs_file(&self) -> PathBuf {
+        self.offline_jobs_file.clone()
     }
 
     pub fn sync_state_file(&self) -> PathBuf {
@@ -117,12 +132,14 @@ mod tests {
 
         assert_eq!(paths.settings_file(), root.join("settings/app-settings.json"));
         assert_eq!(paths.preset_preview_dir(), root.join("cache/preset-preview"));
+        assert_eq!(paths.offline_inputs_dir(), root.join("cache/offline-inputs"));
         assert_eq!(
             paths.voice_design_artifacts_dir(),
             root.join("cache/voice-design-artifacts")
         );
         assert_eq!(paths.offline_exports_dir(), root.join("cache/offline-exports"));
         assert_eq!(paths.custom_voices_dir(), root.join("library/custom-voices"));
+        assert_eq!(paths.offline_jobs_file(), root.join("library/offline-jobs.json"));
         assert_eq!(paths.sync_state_file(), root.join("library/sync-state.json"));
         assert!(paths.settings_file().parent().unwrap().exists());
         assert!(paths.custom_voices_dir().exists());

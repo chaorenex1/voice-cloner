@@ -26,6 +26,8 @@ chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
 ringbuf = "0.4"
 hound = "3.5"
+async-openai = "0.38.0"
+ffmpeg-next = "8.1.0"
 
 [features]
 default = []

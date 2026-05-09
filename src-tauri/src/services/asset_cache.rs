@@ -21,6 +21,7 @@ pub struct VoiceDesignArtifactPath {
 #[derive(Debug, Clone)]
 pub struct AssetCache {
     offline_exports_dir: PathBuf,
+    offline_inputs_dir: PathBuf,
     voice_design_artifacts_dir: PathBuf,
 }
 
@@ -31,14 +32,52 @@ impl AssetCache {
     ) -> AppResult<Self> {
         let offline_exports_dir = offline_exports_dir.into();
         let voice_design_artifacts_dir = voice_design_artifacts_dir.into();
+        let offline_inputs_dir = offline_exports_dir
+            .parent()
+            .map(|parent| parent.join("offline-inputs"))
+            .unwrap_or_else(|| offline_exports_dir.join("inputs"));
+        Self::new_with_inputs(offline_exports_dir, offline_inputs_dir, voice_design_artifacts_dir)
+    }
+
+    pub fn new_with_inputs(
+        offline_exports_dir: impl Into<PathBuf>,
+        offline_inputs_dir: impl Into<PathBuf>,
+        voice_design_artifacts_dir: impl Into<PathBuf>,
+    ) -> AppResult<Self> {
+        let offline_exports_dir = offline_exports_dir.into();
+        let offline_inputs_dir = offline_inputs_dir.into();
+        let voice_design_artifacts_dir = voice_design_artifacts_dir.into();
         std::fs::create_dir_all(&offline_exports_dir)
             .map_err(|source| AppError::io("creating offline exports cache", source))?;
+        std::fs::create_dir_all(&offline_inputs_dir)
+            .map_err(|source| AppError::io("creating offline inputs cache", source))?;
         std::fs::create_dir_all(&voice_design_artifacts_dir)
             .map_err(|source| AppError::io("creating voice design artifacts cache", source))?;
         Ok(Self {
             offline_exports_dir,
+            offline_inputs_dir,
             voice_design_artifacts_dir,
         })
+    }
+
+    pub fn write_offline_input_bytes(&self, job_id: &str, file_name: &str, bytes: &[u8]) -> AppResult<PathBuf> {
+        let safe_job_id = sanitize_path_segment(job_id);
+        let safe_name = sanitize_file_name(file_name);
+        if safe_job_id.is_empty() {
+            return Err(AppError::invalid_settings("job id is required for offline input path"));
+        }
+        if safe_name.is_empty() {
+            return Err(AppError::invalid_settings(
+                "file name is required for offline input path",
+            ));
+        }
+
+        let path = self.offline_inputs_dir.join(format!("{safe_job_id}-{safe_name}"));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| AppError::io("creating input directory", source))?;
+        }
+        std::fs::write(&path, bytes).map_err(|source| AppError::io("writing offline input bytes", source))?;
+        Ok(path)
     }
 
     pub fn offline_artifact_path(&self, job_id: &str, output_format: &str) -> AppResult<OfflineArtifactPath> {
@@ -154,6 +193,21 @@ fn sanitize_path_segment(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn sanitize_file_name(value: &str) -> String {
+    value
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                Some(ch.to_ascii_lowercase())
+            } else {
+                Some('-')
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['-', '.'])
+        .to_string()
 }
 
 #[cfg(test)]

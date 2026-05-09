@@ -8,8 +8,8 @@ pub mod voice_sync_commands;
 
 pub use app_commands::{get_app_runtime_info, get_app_summary};
 pub use audio_commands::{
-    get_default_audio_devices, list_audio_input_devices, list_audio_output_devices, stop_voice_preview,
-    toggle_voice_preview,
+    get_default_audio_devices, list_audio_input_devices, list_audio_output_devices, stop_offline_job_preview,
+    stop_voice_preview, toggle_offline_job_preview, toggle_voice_preview,
 };
 pub use offline_commands::{
     cancel_offline_job, complete_offline_job, create_offline_audio_job, create_offline_text_job, fail_offline_job,

@@ -45,6 +45,8 @@ pub fn run() {
             tauri_api::audio_commands::get_default_audio_devices,
             tauri_api::audio_commands::toggle_voice_preview,
             tauri_api::audio_commands::stop_voice_preview,
+            tauri_api::audio_commands::toggle_offline_job_preview,
+            tauri_api::audio_commands::stop_offline_job_preview,
             tauri_api::realtime_commands::create_realtime_session,
             tauri_api::realtime_commands::start_realtime_session,
             tauri_api::realtime_commands::start_realtime_input,

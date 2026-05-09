@@ -27,15 +27,25 @@ pub struct OfflineJob {
     pub trace_id: String,
     pub input_type: OfflineJobInputType,
     pub input_ref: String,
+    #[serde(default)]
+    pub input_file_name: Option<String>,
     pub voice_name: String,
     pub runtime_params: RuntimeParams,
     pub output_format: String,
     pub status: OfflineJobStatus,
+    #[serde(default = "default_stage")]
+    pub stage: String,
+    #[serde(default)]
+    pub progress: u8,
     pub artifact_url: Option<String>,
     pub local_artifact_path: Option<String>,
     pub error_summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_stage() -> String {
+    "created".into()
 }
 
 impl OfflineJob {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core';
 import { computed, onMounted, ref } from 'vue';
+import OfflineVoicePage from './pages/OfflineVoicePage.vue';
 import RealtimeVoicePage from './pages/RealtimeVoicePage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import VoiceLibraryPage from './pages/VoiceLibraryPage.vue';
@@ -59,7 +60,7 @@ const currentModule = computed(
 );
 
 const hasImplementedPage = computed(() =>
-  ['voices', 'realtime', 'settings'].includes(activeNavKey.value)
+  ['voices', 'realtime', 'offline', 'settings'].includes(activeNavKey.value)
 );
 
 onMounted(async () => {
@@ -127,6 +128,7 @@ function returnFromSettings(): void {
         v-else-if="activeNavKey === 'realtime'"
         @open-device-settings="openDeviceSettingsFromRealtime"
       />
+      <OfflineVoicePage v-else-if="activeNavKey === 'offline'" />
       <SettingsPage
         v-else-if="activeNavKey === 'settings'"
         :return-target="settingsReturnNavKey"

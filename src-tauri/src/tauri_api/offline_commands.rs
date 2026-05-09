@@ -19,7 +19,7 @@ pub fn create_offline_audio_job(
     let settings = state.settings().load_or_default().map_err(ApiError::from)?;
     state
         .offline_jobs()
-        .create_audio_job(request, &settings)
+        .create_audio_job(request, &settings, state.asset_cache())
         .map_err(Into::into)
 }
 
