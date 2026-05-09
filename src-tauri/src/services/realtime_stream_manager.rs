@@ -42,9 +42,18 @@ pub struct RealtimeStreamSnapshot {
     pub latency_ms: Option<u64>,
     pub input_level: AudioLevel,
     pub input_state: String,
+    pub input_source: String,
+    pub input_health: Option<String>,
     pub monitor_state: String,
     pub virtual_mic_frames: u64,
     pub monitor_frames: u64,
+    pub output_received_frames: u64,
+    pub output_written_frames: u64,
+    pub output_ack_mismatches: u64,
+    pub vad_speech_frames: u64,
+    pub vad_utterances_ended: u64,
+    pub tts_audio_chunks: u64,
+    pub converted_frames: u64,
     pub pipeline_stage: String,
     pub asr_text: Option<String>,
     pub tts_text_chunks: u64,
@@ -80,9 +89,18 @@ impl RealtimeStreamSnapshot {
             latency_ms: None,
             input_level: AudioLevel { rms: 0.0, peak: 0.0 },
             input_state: "off".into(),
+            input_source: "microphone".into(),
+            input_health: None,
             monitor_state: "off".into(),
             virtual_mic_frames: 0,
             monitor_frames: 0,
+            output_received_frames: 0,
+            output_written_frames: 0,
+            output_ack_mismatches: 0,
+            vad_speech_frames: 0,
+            vad_utterances_ended: 0,
+            tts_audio_chunks: 0,
+            converted_frames: 0,
             pipeline_stage: "connecting".into(),
             asr_text: None,
             tts_text_chunks: 0,
@@ -121,6 +139,7 @@ impl RealtimeStreamMode {
 
 enum RealtimeControl {
     StartInput(cpal::Device),
+    StartFileInput { file_name: String, audio_bytes: Vec<u8> },
     StopInput,
     StartMonitor(cpal::Device),
     StopMonitor,
@@ -133,6 +152,7 @@ impl RealtimeControl {
     fn label(&self) -> &'static str {
         match self {
             Self::StartInput(_) => "start_input",
+            Self::StartFileInput { .. } => "start_file_input",
             Self::StopInput => "stop_input",
             Self::StartMonitor(_) => "start_monitor",
             Self::StopMonitor => "stop_monitor",
@@ -284,8 +304,25 @@ impl RealtimeStreamManager {
     pub fn start_input(&self, session_id: &str, device: cpal::Device) -> AppResult<()> {
         self.patch_and_send_control(
             session_id,
-            |state| state.input_state = "starting".into(),
+            |state| {
+                state.input_state = "starting".into();
+                state.input_source = "microphone".into();
+                state.input_health = Some("麦克风启动中".into());
+            },
             RealtimeControl::StartInput(device),
+        )
+    }
+
+    pub fn start_file_input(&self, session_id: &str, file_name: String, audio_bytes: Vec<u8>) -> AppResult<()> {
+        let display_name = file_name.clone();
+        self.patch_and_send_control(
+            session_id,
+            |state| {
+                state.input_state = "starting".into();
+                state.input_source = "local_file".into();
+                state.input_health = Some(format!("正在读取本地音频: {display_name}"));
+            },
+            RealtimeControl::StartFileInput { file_name, audio_bytes },
         )
     }
 
@@ -472,7 +509,9 @@ async fn run_realtime_voice_stream(
         }
 
         let (audio_tx, mut audio_rx) = mpsc::unbounded_channel::<RealtimeAudioChunk>();
+        let (file_done_tx, mut file_done_rx) = mpsc::unbounded_channel::<()>();
         let mut input_stop: Option<std_mpsc::Sender<()>> = None;
+        let mut file_input_task: Option<tokio::task::JoinHandle<()>> = None;
         let mut monitor_output: Option<RealtimeMonitorPlayer> = None;
         if input_device.is_some() {
             tracing::debug!(
@@ -484,6 +523,9 @@ async fn run_realtime_voice_stream(
         let frame_samples = vec![0.0; format.samples_per_frame()];
         let mut sequence = 0_u64;
         let mut pending_sends = VecDeque::<Instant>::new();
+        let mut pending_output_chunks = VecDeque::<PendingOutputChunk>::new();
+        let mut pending_audio_acks = Vec::<Value>::new();
+        let mut last_audio_ack_sent_at = Instant::now();
 
         loop {
             tokio::select! {
@@ -512,12 +554,14 @@ async fn run_realtime_voice_stream(
                 Some(control) = control_rx.recv() => {
                     match control {
                         RealtimeControl::StartInput(device) => {
-                            if input_stop.is_none() {
+                            if input_stop.is_none() && file_input_task.is_none() {
                                 match spawn_input_thread(device, audio_tx.clone(), funspeech_format) {
                                     Ok(stop) => {
                                         input_stop = Some(stop);
                                         patch_snapshot(&snapshot, |state| {
                                             state.input_state = "capturing".into();
+                                            state.input_source = "microphone".into();
+                                            state.input_health = Some("麦克风正在采集".into());
                                             state.pipeline_stage = "realtime_input_capturing".into();
                                             state.last_event = Some("input_started".into());
                                             state.last_error = None;
@@ -526,6 +570,37 @@ async fn run_realtime_voice_stream(
                                     Err(error) => {
                                         patch_snapshot(&snapshot, |state| {
                                             state.input_state = "error".into();
+                                            state.input_health = Some("麦克风采集启动失败".into());
+                                            state.last_error = Some(error.to_string());
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        RealtimeControl::StartFileInput { file_name, audio_bytes } => {
+                            if input_stop.is_none() && file_input_task.is_none() {
+                                match spawn_file_input_source(
+                                    audio_tx.clone(),
+                                    file_done_tx.clone(),
+                                    funspeech_format,
+                                    audio_bytes,
+                                ) {
+                                    Ok(task) => {
+                                        file_input_task = Some(task);
+                                        patch_snapshot(&snapshot, |state| {
+                                            state.input_state = "capturing".into();
+                                            state.input_source = "local_file".into();
+                                            state.input_health = Some(format!("正在模拟播放本地音频: {file_name}"));
+                                            state.pipeline_stage = "realtime_file_input_capturing".into();
+                                            state.last_event = Some("file_input_started".into());
+                                            state.last_error = None;
+                                        });
+                                    }
+                                    Err(error) => {
+                                        patch_snapshot(&snapshot, |state| {
+                                            state.input_state = "error".into();
+                                            state.input_source = "local_file".into();
+                                            state.input_health = Some("本地音频读取失败".into());
                                             state.last_error = Some(error.to_string());
                                         });
                                     }
@@ -536,8 +611,12 @@ async fn run_realtime_voice_stream(
                             if let Some(stop) = input_stop.take() {
                                 let _ = stop.send(());
                             }
+                            if let Some(task) = file_input_task.take() {
+                                task.abort();
+                            }
                             patch_snapshot(&snapshot, |state| {
                                 state.input_state = "off".into();
+                                state.input_health = Some("输入已停止".into());
                                 state.pipeline_stage = "realtime_voice_ready".into();
                                 state.last_event = Some("input_stopped".into());
                             });
@@ -605,6 +684,9 @@ async fn run_realtime_voice_stream(
                             if let Some(stop) = input_stop.take() {
                                 let _ = stop.send(());
                             }
+                            if let Some(task) = file_input_task.take() {
+                                task.abort();
+                            }
                             if let Some(output) = monitor_output.take() {
                                 output.stop();
                             }
@@ -626,9 +708,19 @@ async fn run_realtime_voice_stream(
                         }
                     }
                 }
+                Some(()) = file_done_rx.recv(), if file_input_task.is_some() => {
+                    file_input_task = None;
+                    patch_snapshot(&snapshot, |state| {
+                        state.input_state = "off".into();
+                        state.input_health = Some("本地音频模拟播放完成".into());
+                        state.pipeline_stage = "realtime_file_input_completed".into();
+                        state.last_event = Some("file_input_completed".into());
+                    });
+                }
                 message = read.next() => {
                     match message {
                         Some(Ok(Message::Binary(bytes))) => {
+                            let output_metadata = pending_output_chunks.pop_front();
                             let latency_ms = pending_sends
                                 .pop_front()
                                 .map(|sent_at| sent_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
@@ -656,12 +748,28 @@ async fn run_realtime_voice_stream(
                                 .as_ref()
                                 .map(|output| output.push_frame(&frame))
                                 .unwrap_or(false);
+                            let output_written =
+                                monitor_written || (write_virtual_mic && virtual_mic_result.is_ok());
                             patch_snapshot(&snapshot, |state| {
                                 state.received_frames += 1;
                                 state.received_bytes += bytes.len() as u64;
+                                state.converted_frames += 1;
+                                state.output_received_frames += 1;
                                 state.latency_ms = latency_ms;
                                 state.pipeline_stage = "realtime_voice_received_audio".into();
                                 state.last_prompt = Some("正在输出转换后语音".into());
+                                if output_written {
+                                    state.output_written_frames += 1;
+                                }
+                                if let Some(metadata) = &output_metadata {
+                                    state.tts_job_id = metadata.tts_job_id.clone();
+                                    state.audio_chunk_index = metadata.audio_chunk_index;
+                                    if metadata.expected_bytes.is_some_and(|expected| expected != bytes.len() as u64) {
+                                        state.output_ack_mismatches += 1;
+                                    }
+                                } else {
+                                    state.output_ack_mismatches += 1;
+                                }
                                 if monitor_written {
                                     state.monitor_frames += 1;
                                 }
@@ -683,10 +791,61 @@ async fn run_realtime_voice_stream(
                                     "realtime audio frame received"
                                 );
                             }
+                            if let Some(metadata) = output_metadata {
+                                pending_audio_acks.push(json!({
+                                    "tts_job_id": metadata.tts_job_id,
+                                    "audio_chunk_index": metadata.audio_chunk_index,
+                                    "received": true,
+                                    "written_to_virtual_mic": write_virtual_mic && virtual_mic_result.is_ok(),
+                                    "monitor_written": monitor_written,
+                                    "client_ts_ms": chrono::Utc::now().timestamp_millis(),
+                                }));
+                                if pending_audio_acks.len() >= 10
+                                    || last_audio_ack_sent_at.elapsed() >= Duration::from_millis(200)
+                                {
+                                    let last_ack = pending_audio_acks.last().cloned();
+                                    let count = pending_audio_acks.len();
+                                    let ack = json!({
+                                        "event": "client.audio_ack",
+                                        "payload": {
+                                            "count": count,
+                                            "acks": std::mem::take(&mut pending_audio_acks),
+                                            "last": last_ack,
+                                            "client_ts_ms": chrono::Utc::now().timestamp_millis(),
+                                        }
+                                    });
+                                    write.send(Message::Text(ack.to_string())).await.map_err(websocket_error)?;
+                                    last_audio_ack_sent_at = Instant::now();
+                                }
+                            }
                         }
                         Some(Ok(Message::Text(text))) => {
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(value) => {
+                                    if matches!(event_name(&value), Some("tts.audio_chunk")) {
+                                        pending_output_chunks.push_back(PendingOutputChunk {
+                                            tts_job_id: payload_string(&value, "tts_job_id"),
+                                            audio_chunk_index: payload_u64(&value, "audio_chunk_index"),
+                                            expected_bytes: payload_u64(&value, "bytes"),
+                                        });
+                                    }
+                                    if matches!(event_name(&value), Some("tts.job_completed" | "tts_completed"))
+                                        && !pending_audio_acks.is_empty()
+                                    {
+                                        let last_ack = pending_audio_acks.last().cloned();
+                                        let count = pending_audio_acks.len();
+                                        let ack = json!({
+                                            "event": "client.audio_ack",
+                                            "payload": {
+                                                "count": count,
+                                                "acks": std::mem::take(&mut pending_audio_acks),
+                                                "last": last_ack,
+                                                "client_ts_ms": chrono::Utc::now().timestamp_millis(),
+                                            }
+                                        });
+                                        write.send(Message::Text(ack.to_string())).await.map_err(websocket_error)?;
+                                        last_audio_ack_sent_at = Instant::now();
+                                    }
                                     tracing::debug!(
                                         session_id = %session.session_id,
                                         trace_id = %session.trace_id,
@@ -878,6 +1037,14 @@ async fn run_asr_tts_stream(
                                 );
                             });
                         }
+                        RealtimeControl::StartFileInput { .. } => {
+                            patch_snapshot(&snapshot, |state| {
+                                state.last_event = Some("asr_tts_dynamic_input_ignored".into());
+                                state.last_error = Some(
+                                    "ASR->TTS standalone pipeline keeps input fixed for the current session".into(),
+                                );
+                            });
+                        }
                         RealtimeControl::StopInput => {
                             patch_snapshot(&snapshot, |state| {
                                 state.last_event = Some("asr_tts_dynamic_input_ignored".into());
@@ -999,6 +1166,7 @@ async fn run_asr_tts_stream(
                             patch_snapshot(&snapshot, |state| {
                                 state.received_frames += 1;
                                 state.received_bytes += bytes.len() as u64;
+                                state.converted_frames += 1;
                                 state.latency_ms = latency_ms;
                                 state.pipeline_stage = "tts_audio_received".into();
                                 if write_virtual_mic && virtual_mic_result.is_ok() {
@@ -1243,6 +1411,70 @@ struct RealtimeAudioChunk {
     level: AudioLevel,
 }
 
+#[derive(Debug, Clone)]
+struct PendingOutputChunk {
+    tts_job_id: Option<String>,
+    audio_chunk_index: Option<u64>,
+    expected_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+struct RealtimeInputFrameCutter {
+    source_sample_rate: u32,
+    target_format: PcmFormat,
+    pending_samples: Vec<f32>,
+    source_position: f64,
+}
+
+impl RealtimeInputFrameCutter {
+    fn new(source_sample_rate: u32, target_format: PcmFormat) -> Self {
+        Self {
+            source_sample_rate,
+            target_format,
+            pending_samples: Vec::new(),
+            source_position: 0.0,
+        }
+    }
+
+    fn push_mono_samples(&mut self, samples: &[f32]) -> Vec<RealtimeAudioChunk> {
+        self.pending_samples
+            .extend(samples.iter().map(|sample| sample.clamp(-1.0, 1.0)));
+        let target_samples_per_frame = self.target_format.samples_per_frame().max(1);
+        let step = self.source_sample_rate as f64 / self.target_format.sample_rate.max(1) as f64;
+        let mut chunks = Vec::new();
+
+        loop {
+            let last_source_position =
+                self.source_position + (target_samples_per_frame.saturating_sub(1) as f64 * step);
+            if last_source_position.floor() as usize >= self.pending_samples.len() {
+                break;
+            }
+
+            let mut frame_samples = Vec::with_capacity(target_samples_per_frame);
+            for index in 0..target_samples_per_frame {
+                let source_position = self.source_position + index as f64 * step;
+                let left = source_position.floor() as usize;
+                let right = (left + 1).min(self.pending_samples.len() - 1);
+                let fraction = (source_position - left as f64) as f32;
+                let sample =
+                    self.pending_samples[left] + (self.pending_samples[right] - self.pending_samples[left]) * fraction;
+                frame_samples.push(sample.clamp(-1.0, 1.0));
+            }
+
+            self.source_position += target_samples_per_frame as f64 * step;
+            let consumed = self.source_position.floor() as usize;
+            if consumed > 0 {
+                let consumed = consumed.min(self.pending_samples.len());
+                self.pending_samples.drain(..consumed);
+                self.source_position -= consumed as f64;
+            }
+            chunks.push(realtime_chunk_from_samples(&frame_samples));
+        }
+
+        chunks
+    }
+}
+
 enum RealtimeMonitorCommand {
     Frame { samples: Vec<f32>, source_sample_rate: u32 },
     Stop,
@@ -1453,6 +1685,90 @@ fn spawn_silence_source(tx: mpsc::UnboundedSender<RealtimeAudioChunk>, format: P
     });
 }
 
+fn realtime_chunk_from_samples(samples: &[f32]) -> RealtimeAudioChunk {
+    let level = crate::audio::frame::measure_level(samples);
+    let mut bytes = Vec::with_capacity(samples.len() * std::mem::size_of::<i16>());
+    for sample in samples {
+        bytes.extend_from_slice(&((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes());
+    }
+    RealtimeAudioChunk { bytes, level }
+}
+
+fn spawn_file_input_source(
+    tx: mpsc::UnboundedSender<RealtimeAudioChunk>,
+    done_tx: mpsc::UnboundedSender<()>,
+    format: PcmFormat,
+    audio_bytes: Vec<u8>,
+) -> AppResult<tokio::task::JoinHandle<()>> {
+    let chunks = decode_wav_to_realtime_chunks(&audio_bytes, format)?;
+    Ok(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(format.frame_ms.max(1) as u64));
+        for chunk in chunks {
+            interval.tick().await;
+            if tx.send(chunk).is_err() {
+                break;
+            }
+        }
+        let _ = done_tx.send(());
+    }))
+}
+
+fn decode_wav_to_realtime_chunks(audio_bytes: &[u8], format: PcmFormat) -> AppResult<Vec<RealtimeAudioChunk>> {
+    let cursor = std::io::Cursor::new(audio_bytes);
+    let mut reader = hound::WavReader::new(cursor).map_err(|error| AppError::audio(error.to_string()))?;
+    let spec = reader.spec();
+    let channels = spec.channels.max(1) as usize;
+    let source_rate = spec.sample_rate;
+    let mut interleaved = Vec::<f32>::new();
+    match spec.sample_format {
+        hound::SampleFormat::Float => {
+            for sample in reader.samples::<f32>() {
+                interleaved.push(
+                    sample
+                        .map_err(|error| AppError::audio(error.to_string()))?
+                        .clamp(-1.0, 1.0),
+                );
+            }
+        }
+        hound::SampleFormat::Int => {
+            if spec.bits_per_sample <= 16 {
+                for sample in reader.samples::<i16>() {
+                    interleaved
+                        .push(sample.map_err(|error| AppError::audio(error.to_string()))? as f32 / i16::MAX as f32);
+                }
+            } else {
+                let max_value = ((1_i64 << (spec.bits_per_sample.saturating_sub(1) as u32)) - 1).max(1) as f32;
+                for sample in reader.samples::<i32>() {
+                    interleaved.push(
+                        (sample.map_err(|error| AppError::audio(error.to_string()))? as f32 / max_value)
+                            .clamp(-1.0, 1.0),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut mono = Vec::with_capacity(interleaved.len() / channels.max(1));
+    for frame in interleaved.chunks(channels) {
+        let mixed = frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32;
+        mono.push(mixed.clamp(-1.0, 1.0));
+    }
+    let resampled = resample_samples_linear(&mono, source_rate, format.sample_rate);
+    let samples_per_frame = format.samples_per_frame().max(1);
+    let mut chunks = Vec::new();
+    for frame in resampled.chunks(samples_per_frame) {
+        let mut samples = frame.to_vec();
+        if samples.len() < samples_per_frame {
+            samples.resize(samples_per_frame, 0.0);
+        }
+        chunks.push(realtime_chunk_from_samples(&samples));
+    }
+    if chunks.is_empty() {
+        return Err(AppError::audio("local audio file did not contain playable samples"));
+    }
+    Ok(chunks)
+}
+
 fn spawn_input_thread(
     device: cpal::Device,
     tx: mpsc::UnboundedSender<RealtimeAudioChunk>,
@@ -1500,26 +1816,39 @@ fn start_input_stream_on_thread(
     let channels = config.channels.max(1) as usize;
     let input_sample_rate = config.sample_rate.0;
     let err_fn = |error| tracing::warn!(%error, "realtime input stream error");
+    let frame_cutter = Arc::new(Mutex::new(RealtimeInputFrameCutter::new(
+        input_sample_rate,
+        target_format,
+    )));
 
     let stream = match sample_format {
-        CpalSampleFormat::F32 => device.build_input_stream(
-            &config,
-            move |data: &[f32], _| send_input_chunk(data, channels, input_sample_rate, target_format, &tx),
-            err_fn,
-            None,
-        ),
-        CpalSampleFormat::I16 => device.build_input_stream(
-            &config,
-            move |data: &[i16], _| send_input_chunk(data, channels, input_sample_rate, target_format, &tx),
-            err_fn,
-            None,
-        ),
-        CpalSampleFormat::U16 => device.build_input_stream(
-            &config,
-            move |data: &[u16], _| send_input_chunk(data, channels, input_sample_rate, target_format, &tx),
-            err_fn,
-            None,
-        ),
+        CpalSampleFormat::F32 => {
+            let frame_cutter = Arc::clone(&frame_cutter);
+            device.build_input_stream(
+                &config,
+                move |data: &[f32], _| send_input_chunk(data, channels, &frame_cutter, &tx),
+                err_fn,
+                None,
+            )
+        }
+        CpalSampleFormat::I16 => {
+            let frame_cutter = Arc::clone(&frame_cutter);
+            device.build_input_stream(
+                &config,
+                move |data: &[i16], _| send_input_chunk(data, channels, &frame_cutter, &tx),
+                err_fn,
+                None,
+            )
+        }
+        CpalSampleFormat::U16 => {
+            let frame_cutter = Arc::clone(&frame_cutter);
+            device.build_input_stream(
+                &config,
+                move |data: &[u16], _| send_input_chunk(data, channels, &frame_cutter, &tx),
+                err_fn,
+                None,
+            )
+        }
         other => return Err(AppError::audio(format!("unsupported input sample format: {other:?}"))),
     }
     .map_err(|error| AppError::audio(error.to_string()))?;
@@ -1553,8 +1882,7 @@ impl RealtimeInputSample for u16 {
 fn send_input_chunk<T: Copy + RealtimeInputSample>(
     data: &[T],
     channels: usize,
-    input_sample_rate: u32,
-    target_format: PcmFormat,
+    frame_cutter: &Arc<Mutex<RealtimeInputFrameCutter>>,
     tx: &mpsc::UnboundedSender<RealtimeAudioChunk>,
 ) {
     if data.is_empty() {
@@ -1565,13 +1893,16 @@ fn send_input_chunk<T: Copy + RealtimeInputSample>(
         let mixed = frame.iter().map(|sample| (*sample).to_f32()).sum::<f32>() / frame.len() as f32;
         mono.push(mixed.clamp(-1.0, 1.0));
     }
-    let resampled = resample_samples_linear(&mono, input_sample_rate, target_format.sample_rate);
-    let level = crate::audio::frame::measure_level(&resampled);
-    let mut bytes = Vec::with_capacity(resampled.len() * std::mem::size_of::<i16>());
-    for sample in resampled {
-        bytes.extend_from_slice(&((sample * i16::MAX as f32) as i16).to_le_bytes());
+    let chunks = match frame_cutter.lock() {
+        Ok(mut cutter) => cutter.push_mono_samples(&mono),
+        Err(error) => {
+            tracing::warn!(%error, "realtime input frame cutter lock poisoned");
+            Vec::new()
+        }
+    };
+    for chunk in chunks {
+        let _ = tx.send(chunk);
     }
-    let _ = tx.send(RealtimeAudioChunk { bytes, level });
 }
 
 fn resample_samples_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
@@ -1780,7 +2111,31 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
             }
             "input.audio_dequeued" => {
                 state.pipeline_stage = "input_audio_dequeued".into();
+                if let Some(is_silence) = payload_bool(value, "is_silence") {
+                    state.input_health = Some(if is_silence {
+                        "服务端收到输入，但判定为静音".into()
+                    } else {
+                        "服务端正在接收有效输入".into()
+                    });
+                }
                 state.last_prompt = Some("正在接收麦克风输入".into());
+            }
+            "vad.speech_frame" => {
+                state.vad_speech_frames += payload_u64(value, "frames").unwrap_or(1);
+                state.pipeline_stage = "vad_speech_frame".into();
+                state.input_health = Some("VAD 检测到有效语音帧".into());
+                state.last_prompt = Some("VAD 检测到语音，正在送入 ASR".into());
+            }
+            "vad.speech_started" => {
+                state.pipeline_stage = "vad_speech_started".into();
+                state.input_health = Some("VAD 检测到开始说话".into());
+                state.last_prompt = Some("检测到开始说话".into());
+            }
+            "vad.speech_ended" => {
+                state.vad_utterances_ended += 1;
+                state.pipeline_stage = "vad_speech_ended".into();
+                state.input_health = Some("VAD 检测到本句结束".into());
+                state.last_prompt = Some("本句语音结束，等待变声输出".into());
             }
             "backpressure.applied" => {
                 let reason = payload_string(value, "reason").unwrap_or_else(|| "backpressure".into());
@@ -1827,8 +2182,13 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                 state.last_prompt = Some("即将播放转换后语音".into());
             }
             "tts.audio_chunk" => {
+                state.tts_audio_chunks += 1;
                 state.pipeline_stage = "tts_audio_chunk_ready".into();
                 state.last_prompt = Some("正在输出转换后语音".into());
+            }
+            "client.audio_ack.received" => {
+                state.pipeline_stage = "client_audio_ack_received".into();
+                state.last_prompt = Some("服务端已确认客户端收到变声音频".into());
             }
             "tts.job_completed" | "tts_completed" => {
                 state.pipeline_stage = "tts_completed".into();
@@ -1862,7 +2222,7 @@ mod tests {
     use super::{
         apply_asr_event, apply_json_event, apply_tts_event, funspeech_realtime_format, is_final_asr_event,
         resample_samples_linear, run_synthesis_message, start_synthesis_message, start_transcription_message,
-        text_from_asr_event, RealtimeStreamSnapshot,
+        text_from_asr_event, RealtimeInputFrameCutter, RealtimeStreamSnapshot,
     };
 
     #[test]
@@ -1912,6 +2272,26 @@ mod tests {
         let upsampled = resample_samples_linear(&downsampled, 16_000, 48_000);
         assert_eq!(upsampled.len(), 6);
         assert!((upsampled[0] - source[0]).abs() < 0.001);
+    }
+
+    #[test]
+    fn realtime_input_frame_cutter_emits_fixed_funspeech_frames() {
+        let target_format = PcmFormat {
+            sample_rate: 16_000,
+            channels: 1,
+            frame_ms: 20,
+            ..Default::default()
+        };
+        let mut cutter = RealtimeInputFrameCutter::new(48_000, target_format);
+        let mut chunks = Vec::new();
+
+        chunks.extend(cutter.push_mono_samples(&vec![0.1; 481]));
+        chunks.extend(cutter.push_mono_samples(&vec![0.1; 479]));
+        chunks.extend(cutter.push_mono_samples(&vec![0.1; 960]));
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|chunk| chunk.bytes.len() == 640));
+        assert!(chunks.iter().all(|chunk| chunk.level.rms > 0.0));
     }
 
     #[test]

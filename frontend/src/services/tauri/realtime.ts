@@ -3,6 +3,7 @@ import type {
   CreateRealtimeSessionRequest,
   RealtimeSession,
   RealtimeStreamSnapshot,
+  StartRealtimeFileInputRequest,
   RuntimeParams,
 } from '../../utils/types/realtime';
 import {
@@ -111,9 +112,18 @@ function mockSnapshot(session: RealtimeSession): RealtimeStreamSnapshot {
     latencyMs: session.status === 'running' ? 24 : null,
     inputLevel: { rms: 0, peak: 0 },
     inputState: 'off',
+    inputSource: 'microphone',
+    inputHealth: null,
     monitorState: 'off',
     virtualMicFrames: session.status === 'running' ? 42 : 0,
     monitorFrames: 0,
+    outputReceivedFrames: session.status === 'running' ? 42 : 0,
+    outputWrittenFrames: 0,
+    outputAckMismatches: 0,
+    vadSpeechFrames: session.status === 'running' ? 21 : 0,
+    vadUtterancesEnded: 0,
+    ttsAudioChunks: session.status === 'running' ? 42 : 0,
+    convertedFrames: session.status === 'running' ? 42 : 0,
     pipelineStage: session.status === 'running' ? 'preview_audio_received' : 'preview',
     asrText: null,
     ttsTextChunks: 0,
@@ -163,6 +173,22 @@ export async function startRealtimeInput(
     ...mockSnapshot(session),
     inputState: 'capturing',
   }));
+}
+
+export async function startRealtimeFileInput(
+  session: RealtimeSession,
+  request: StartRealtimeFileInputRequest
+): Promise<RealtimeStreamSnapshot> {
+  return invokeRealtime(
+    'start_realtime_file_input',
+    { sessionId: session.sessionId, request },
+    () => ({
+      ...mockSnapshot(session),
+      inputState: 'capturing',
+      inputSource: 'local_file',
+      inputHealth: `正在模拟播放本地音频: ${request.fileName}`,
+    })
+  );
 }
 
 export async function stopRealtimeInput(session: RealtimeSession): Promise<RealtimeStreamSnapshot> {

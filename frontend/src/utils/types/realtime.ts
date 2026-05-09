@@ -44,9 +44,18 @@ export interface RealtimeStreamSnapshot {
     peak: number;
   };
   inputState: string;
+  inputSource: 'microphone' | 'local_file' | string;
+  inputHealth: string | null;
   monitorState: string;
   virtualMicFrames: number;
   monitorFrames: number;
+  outputReceivedFrames: number;
+  outputWrittenFrames: number;
+  outputAckMismatches: number;
+  vadSpeechFrames: number;
+  vadUtterancesEnded: number;
+  ttsAudioChunks: number;
+  convertedFrames: number;
   pipelineStage: string;
   asrText: string | null;
   ttsTextChunks: number;
@@ -64,4 +73,9 @@ export interface RealtimeStreamSnapshot {
   configVersion: number | null;
   backpressureHint: string | null;
   lastError: string | null;
+}
+
+export interface StartRealtimeFileInputRequest {
+  fileName: string;
+  audioBytes: number[];
 }

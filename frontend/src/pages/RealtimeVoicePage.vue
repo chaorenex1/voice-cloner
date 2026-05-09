@@ -64,9 +64,11 @@ const latencyLabel = computed(() => {
 const frameProofLabel = computed(() => {
   const snapshot = realtime.state.snapshot;
   if (!snapshot) {
-    return '音频帧 --';
+    return 'VAD -- / 变声 --';
   }
-  return `发 ${snapshot.sentFrames} / 收 ${snapshot.receivedFrames}`;
+  const received = snapshot.outputReceivedFrames || snapshot.convertedFrames || snapshot.receivedFrames;
+  const written = snapshot.outputWrittenFrames || snapshot.virtualMicFrames || snapshot.monitorFrames;
+  return `VAD ${snapshot.vadSpeechFrames} / 结束 ${snapshot.vadUtterancesEnded} / 收 ${received} / 写 ${written}`;
 });
 
 const outputProofLabel = computed(() => {
@@ -88,17 +90,24 @@ const realtimeProofHint = computed(() => {
   if (snapshot.backpressureHint) {
     return snapshot.backpressureHint;
   }
+  if (snapshot.inputHealth) {
+    return snapshot.inputHealth;
+  }
   if (snapshot.lastPrompt) {
     return snapshot.lastPrompt;
   }
-  if (snapshot.receivedFrames > 0) {
-    if (snapshot.monitorState === 'listening') {
-      return `已收到转换后语音 ${snapshot.receivedFrames} 帧，正在通过监听输出设备播放。`;
+  const convertedFrames = snapshot.outputReceivedFrames || snapshot.convertedFrames || snapshot.receivedFrames;
+  if (convertedFrames > 0) {
+    if (snapshot.outputAckMismatches > 0) {
+      return `已收到变声音频 ${convertedFrames} 帧，但有 ${snapshot.outputAckMismatches} 帧缺少输出元数据匹配。`;
     }
-    return `已收到转换后语音 ${snapshot.receivedFrames} 帧，可点击监听播放到输出设备。`;
+    if (snapshot.monitorState === 'listening') {
+      return `已收到变声成功音频 ${convertedFrames} 帧，正在通过监听输出设备播放。`;
+    }
+    return `已收到变声成功音频 ${convertedFrames} 帧，可点击监听播放到输出设备。`;
   }
-  if (snapshot.sentFrames > 0) {
-    return `麦克风已发送 ${snapshot.sentFrames} 帧，正在等待 FunSpeech 返回转换后语音。`;
+  if (snapshot.vadSpeechFrames > 0) {
+    return `VAD 已确认并发送 ${snapshot.vadSpeechFrames} 帧，正在等待 FunSpeech 返回变声语音。`;
   }
   return '会话已就绪，点击麦克风开始采集并发送输入音频。';
 });
@@ -108,7 +117,10 @@ const callHeadline = computed(() => {
     return '声音通话中断';
   }
   if (realtime.isRunning.value) {
-    return realtime.isInputCapturing.value ? '正在采集麦克风输入' : '实时会话已就绪';
+    if (!realtime.isInputCapturing.value) {
+      return '实时会话已就绪';
+    }
+    return realtime.state.inputSource === 'localFile' ? '正在模拟本地音频输入' : '正在采集麦克风输入';
   }
   if (realtime.state.busy) {
     return '正在进入语音通话';
@@ -137,8 +149,16 @@ const micLabel = computed(() => {
   if (realtime.state.snapshot?.inputState === 'starting') {
     return '开启中';
   }
+  if (realtime.state.inputSource === 'localFile') {
+    return realtime.isInputCapturing.value ? '停模拟' : '模拟';
+  }
   return realtime.isInputCapturing.value ? '关麦克风' : '麦克风';
 });
+
+function handleRealtimeFileChange(event: Event): void {
+  const input = event.currentTarget as HTMLInputElement;
+  realtime.setSelectedInputFile(input.files?.[0] ?? null);
+}
 
 async function selectVoiceFromDrawer(voiceName: string): Promise<void> {
   await realtime.selectVoice(voiceName);
@@ -213,6 +233,34 @@ onBeforeUnmount(() => {
           <div v-if="realtime.isRunning.value" class="call-bubble call-bubble--voice">
             {{ realtimeProofHint }}
           </div>
+        </div>
+
+        <div class="input-source-panel" aria-label="实时输入源">
+          <button
+            type="button"
+            :class="{ active: realtime.state.inputSource === 'microphone' }"
+            :disabled="realtime.isInputCapturing.value"
+            @click="realtime.setInputSource('microphone')"
+          >
+            麦克风
+          </button>
+          <button
+            type="button"
+            :class="{ active: realtime.state.inputSource === 'localFile' }"
+            :disabled="realtime.isInputCapturing.value"
+            @click="realtime.setInputSource('localFile')"
+          >
+            本地音频模拟
+          </button>
+          <label v-if="realtime.state.inputSource === 'localFile'" class="input-source-panel__file">
+            <input
+              type="file"
+              accept=".wav,audio/wav,audio/x-wav"
+              :disabled="realtime.isInputCapturing.value"
+              @change="handleRealtimeFileChange"
+            />
+            <span>{{ realtime.state.selectedInputFile?.name ?? '选择 WAV 测试音频' }}</span>
+          </label>
         </div>
 
         <nav class="call-dock" aria-label="通话控制">

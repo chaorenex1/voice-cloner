@@ -51,6 +51,7 @@ pub fn run() {
             tauri_api::realtime_commands::create_realtime_session,
             tauri_api::realtime_commands::start_realtime_session,
             tauri_api::realtime_commands::start_realtime_input,
+            tauri_api::realtime_commands::start_realtime_file_input,
             tauri_api::realtime_commands::stop_realtime_input,
             tauri_api::realtime_commands::start_realtime_monitor,
             tauri_api::realtime_commands::stop_realtime_monitor,

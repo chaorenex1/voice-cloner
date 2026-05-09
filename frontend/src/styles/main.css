@@ -1733,6 +1733,53 @@ button {
   background: #f1ffd3;
 }
 
+.input-source-panel {
+  z-index: 1;
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  color: #26384b;
+  font-size: 0.84rem;
+}
+
+.input-source-panel button,
+.input-source-panel__file {
+  border: 1px solid rgba(23, 36, 52, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: inherit;
+}
+
+.input-source-panel button {
+  padding: 8px 13px;
+  cursor: pointer;
+}
+
+.input-source-panel button.active {
+  border-color: rgba(84, 183, 120, 0.45);
+  background: #e6fb84;
+}
+
+.input-source-panel__file {
+  display: inline-flex;
+  max-width: min(320px, 100%);
+  padding: 8px 13px;
+  cursor: pointer;
+}
+
+.input-source-panel__file input {
+  display: none;
+}
+
+.input-source-panel__file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .call-dock {
   z-index: 1;
   display: flex;

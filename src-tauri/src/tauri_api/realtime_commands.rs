@@ -16,6 +16,13 @@ use crate::{
     },
 };
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartRealtimeFileInputRequest {
+    pub file_name: String,
+    pub audio_bytes: Vec<u8>,
+}
+
 #[tauri::command]
 pub fn create_realtime_session(
     state: State<'_, AppState>,
@@ -124,6 +131,33 @@ pub fn start_realtime_input(state: State<'_, AppState>, session_id: String) -> A
         let _ = state.virtual_mic().stop();
         return Err(ApiError::from(error));
     }
+    state
+        .realtime_streams()
+        .get_snapshot(&session_id)
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub fn start_realtime_file_input(
+    state: State<'_, AppState>,
+    session_id: String,
+    request: StartRealtimeFileInputRequest,
+) -> ApiResult<RealtimeStreamSnapshot> {
+    tracing::debug!(
+        %session_id,
+        file_name = %request.file_name,
+        audio_bytes = request.audio_bytes.len(),
+        "start realtime file input requested"
+    );
+    if request.audio_bytes.is_empty() {
+        return Err(ApiError::from(crate::app::error::AppError::audio(
+            "local audio file is empty",
+        )));
+    }
+    state
+        .realtime_streams()
+        .start_file_input(&session_id, request.file_name, request.audio_bytes)
+        .map_err(ApiError::from)?;
     state
         .realtime_streams()
         .get_snapshot(&session_id)

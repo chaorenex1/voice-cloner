@@ -3,6 +3,7 @@ import {
   createRealtimeSession,
   getRealtimeStreamSnapshot,
   startRealtimeInput,
+  startRealtimeFileInput,
   startRealtimeMonitor,
   startRealtimeSession,
   stopRealtimeInput,
@@ -37,6 +38,8 @@ export interface RealtimeState {
   voices: VoiceSummary[];
   settings: AppSettings | null;
   selectedVoiceName: string | null;
+  inputSource: 'microphone' | 'localFile';
+  selectedInputFile: File | null;
   params: RealtimeParamState;
   session: RealtimeSession | null;
   snapshot: RealtimeStreamSnapshot | null;
@@ -63,6 +66,8 @@ const state = reactive<RealtimeState>({
   voices: [],
   settings: null,
   selectedVoiceName: null,
+  inputSource: 'microphone',
+  selectedInputFile: null,
   params: {
     pitch: 1,
     strength: 1,
@@ -256,12 +261,27 @@ export function useRealtimeStore() {
     state.lastError = null;
     const wasCapturing = isInputCapturing.value;
     try {
-      state.snapshot = wasCapturing
-        ? await stopRealtimeInput(state.session)
-        : await startRealtimeInput(state.session);
+      if (wasCapturing) {
+        state.snapshot = await stopRealtimeInput(state.session);
+      } else if (state.inputSource === 'localFile') {
+        if (!state.selectedInputFile) {
+          state.lastError = '请选择本地 WAV 音频后再开始模拟';
+          state.busy = false;
+          return;
+        }
+        const audioBytes = Array.from(new Uint8Array(await state.selectedInputFile.arrayBuffer()));
+        state.snapshot = await startRealtimeFileInput(state.session, {
+          fileName: state.selectedInputFile.name,
+          audioBytes,
+        });
+      } else {
+        state.snapshot = await startRealtimeInput(state.session);
+      }
       state.lastMessage = wasCapturing
         ? '麦克风输入已关闭，会话保持连接'
-        : '麦克风正在采集输入音频';
+        : state.inputSource === 'localFile'
+          ? '正在用本地音频模拟实时输入'
+          : '麦克风正在采集输入音频';
       logRealtimeDebug('store:toggle-input:success', {
         action: wasCapturing ? 'stop' : 'start',
         snapshot: summarizeRealtimeSnapshot(state.snapshot),
@@ -274,6 +294,18 @@ export function useRealtimeStore() {
       });
     } finally {
       state.busy = false;
+    }
+  }
+
+  function setInputSource(inputSource: 'microphone' | 'localFile'): void {
+    state.inputSource = inputSource;
+    state.lastMessage = inputSource === 'localFile' ? '已切换到本地音频模拟' : '已切换到麦克风输入';
+  }
+
+  function setSelectedInputFile(file: File | null): void {
+    state.selectedInputFile = file;
+    if (file) {
+      state.lastMessage = `已选择实时模拟音频: ${file.name}`;
     }
   }
 
@@ -410,6 +442,8 @@ export function useRealtimeStore() {
     start,
     stop,
     toggleInput,
+    setInputSource,
+    setSelectedInputFile,
     toggleMonitor,
     selectVoice,
     setParam,
