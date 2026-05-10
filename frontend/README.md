@@ -1,6 +1,6 @@
 # voice-cloner frontend
 
-Minimal Vue 3 shell for the voice-cloner desktop app.
+Vue 3 frontend for the voice-cloner desktop AI voice changer based on FunSpeech.
 
 ## Commands
 
@@ -10,4 +10,4 @@ pnpm --dir frontend dev
 pnpm --dir frontend build
 ```
 
-The frontend currently exposes one landing page that verifies the Tauri bridge and reserves space for future voice profile, live session, and export flows.
+The frontend provides the desktop UI for realtime voice changing, voice library management, backend settings, and offline conversion workflows.

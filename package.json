@@ -1,7 +1,7 @@
 {
   "name": "voice-cloner",
   "version": "0.1.0",
-  "description": "Minimal Tauri + Vue skeleton for the voice-cloner desktop app.",
+  "description": "Tauri + Vue desktop AI voice changer based on FunSpeech.",
   "private": true,
   "scripts": {
     "dev": "pnpm --dir frontend dev",

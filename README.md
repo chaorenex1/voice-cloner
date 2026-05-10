@@ -1,17 +1,22 @@
 # voice-cloner
 
-A reset desktop skeleton for the future Voice Cloner app.
+voice-cloner is a desktop AI voice changer based on [FunSpeech](https://github.com/chaorenex1/FunSpeech).
+It uses a Vue 3 + Tauri shell to manage voices, realtime conversion sessions, and offline voice conversion workflows around the FunSpeech speech backend.
 
-## What remains
+## Project scope
 
-- `frontend/`: Vue 3 + TypeScript + Vite shell with one status-driven landing page
-- `src-tauri/`: minimal Tauri backend with a single demo command for app metadata
-- `docs/`: existing product and architecture notes for the voice-cloner direction
+- `frontend/`: Vue 3 + TypeScript + Vite desktop UI for realtime voice changing, voice management, settings, and offline jobs
+- `src-tauri/`: Rust + Tauri backend for desktop integration, audio/session orchestration, local storage, and FunSpeech clients
+- `docs/`: product, architecture, flow, and implementation notes for the AI voice changer
 
-## Current scope
+## Backend dependency
 
-This repository no longer ships the original Code AI Assistant feature set.
-It is intentionally trimmed down to a clean foundation for building the real-time voice conversion product described in `docs/`.
+FunSpeech is the voice execution backend for the app. The current architecture treats it as the integration point for:
+
+- realtime voice changing
+- ASR / TTS flows
+- voice design and preview generation
+- voice library synchronization through `voice_manager`
 
 ## Development
 
@@ -22,10 +27,3 @@ cd src-tauri
 cargo check
 cargo test
 ```
-
-## Next build-out ideas
-
-- microphone and device management
-- voice profile library
-- live conversion session controls
-- offline audio conversion queue

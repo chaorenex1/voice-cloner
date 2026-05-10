@@ -1,6 +1,6 @@
 {
   "identifier": "desktop",
-  "description": "Default capabilities for the voice-cloner app skeleton",
+  "description": "Default capabilities for the FunSpeech-based voice-cloner desktop app",
   "platforms": ["macOS", "windows", "linux"],
   "webviews": ["main"],
   "windows": ["main"],
