@@ -29,6 +29,7 @@ const PLAYBACK_GAP_SKIP_PENDING: usize = 10;
 const PLAYBACK_MAX_PENDING: usize = 600;
 const PLAYBACK_JITTER_PREBUFFER_MS: usize = 0;
 const REALTIME_LEDGER_LIMIT: usize = 80;
+const MONITOR_OUTPUT_IDLE_CHECK_MS: u64 = 100;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -295,6 +296,8 @@ impl RealtimeStreamManager {
         virtual_mic: Arc<SelectableVirtualMicAdapter>,
         write_virtual_mic: bool,
         mode: RealtimeStreamMode,
+        debug_enabled: bool,
+        playback_ack_enabled: bool,
     ) -> AppResult<RealtimeStreamSnapshot> {
         tracing::debug!(
             session_id = %session.session_id,
@@ -306,6 +309,8 @@ impl RealtimeStreamManager {
             write_virtual_mic,
             has_input_device = input_device.is_some(),
             realtime_mode = mode.label(),
+            debug_enabled,
+            playback_ack_enabled,
             "realtime stream start requested"
         );
         self.stop(&session.session_id).await;
@@ -332,6 +337,8 @@ impl RealtimeStreamManager {
                     Arc::clone(&snapshot),
                     control_rx,
                     ready_tx,
+                    debug_enabled,
+                    playback_ack_enabled,
                 ));
             }
             RealtimeStreamMode::AsrTts { asr_url, tts_url } => {
@@ -519,12 +526,16 @@ async fn run_realtime_voice_stream(
     snapshot: Arc<RwLock<RealtimeStreamSnapshot>>,
     mut control_rx: mpsc::UnboundedReceiver<RealtimeControl>,
     ready_tx: oneshot::Sender<AppResult<()>>,
+    debug_enabled: bool,
+    playback_ack_enabled: bool,
 ) {
     tracing::debug!(
         session_id = %session.session_id,
         trace_id = %session.trace_id,
         voice_name = %session.voice_name,
         websocket_url = %session.websocket_url,
+        debug_enabled,
+        playback_ack_enabled,
         "realtime stream task starting"
     );
     let mut ready_tx = Some(ready_tx);
@@ -548,13 +559,14 @@ async fn run_realtime_voice_stream(
             payload = %started,
             "FunSpeech realtime event received"
         );
-        patch_snapshot(&snapshot, |state| apply_json_event(state, &started));
+        patch_snapshot(&snapshot, |state| apply_json_event(state, &started, debug_enabled));
         if event_name(&started) != Some("session_started") {
             return Err(AppError::realtime_session(format!(
                 "expected session_started from FunSpeech, got {started}"
             )));
         }
 
+        let parameters = funspeech_realtime_parameters(&session.runtime_params);
         let configure = json!({
             "event": "configure",
             "type": "start",
@@ -564,8 +576,8 @@ async fn run_realtime_voice_stream(
             "format": "pcm",
             "sample_rate": funspeech_format.sample_rate,
             "sampleRate": funspeech_format.sample_rate,
-            "params": session.runtime_params.values,
-            "parameters": session.runtime_params.values,
+            "params": parameters.clone(),
+            "parameters": parameters,
         });
         write
             .send(Message::Text(configure.to_string()))
@@ -590,7 +602,7 @@ async fn run_realtime_voice_stream(
                 payload = %event,
                 "FunSpeech realtime event received"
             );
-            patch_snapshot(&snapshot, |state| apply_json_event(state, &event));
+            patch_snapshot(&snapshot, |state| apply_json_event(state, &event, debug_enabled));
             match event_name(&event) {
                 Some("configured" | "ready") => {
                     accepted = true;
@@ -663,6 +675,8 @@ async fn run_realtime_voice_stream(
                         &mut last_playable_output_at,
                         output_timeline_started_at,
                         &mut pending_client_events,
+                        debug_enabled,
+                        playback_ack_enabled,
                     );
                     if played && !pending_client_events.is_empty() {
                         flush_client_events(&mut write, &mut pending_client_events).await?;
@@ -678,11 +692,13 @@ async fn run_realtime_voice_stream(
                         state.rust_sent_seq = Some(sequence);
                         state.input_level = chunk.level;
                         state.pipeline_stage = "realtime_voice_sending_audio".into();
-                        push_ledger(state, "rust_send", "audio_frame_sent", |entry| {
-                            entry.rust_sent_seq = Some(sequence);
-                            entry.status = Some("sent".into());
-                            entry.message = Some(format!("bytes={} rms={:.4}", chunk.bytes.len(), chunk.level.rms));
-                        });
+                        if debug_enabled {
+                            push_ledger(state, "rust_send", "audio_frame_sent", |entry| {
+                                entry.rust_sent_seq = Some(sequence);
+                                entry.status = Some("sent".into());
+                                entry.message = Some(format!("bytes={} rms={:.4}", chunk.bytes.len(), chunk.level.rms));
+                            });
+                        }
                     });
                     if sequence % 50 == 0 {
                         tracing::debug!(
@@ -802,11 +818,12 @@ async fn run_realtime_voice_stream(
                             });
                         }
                         RealtimeControl::UpdateParams(runtime_params) => {
+                            let parameters = funspeech_realtime_parameters(&runtime_params);
                             let message = json!({
                                 "event": "update",
                                 "type": "update_params",
-                                "params": runtime_params.values,
-                                "parameters": runtime_params.values,
+                                "params": parameters.clone(),
+                                "parameters": parameters,
                             });
                             write.send(Message::Text(message.to_string())).await.map_err(websocket_error)?;
                             tracing::debug!(
@@ -882,43 +899,67 @@ async fn run_realtime_voice_stream(
                                 state.output_received_frames += 1;
                                 state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
                                 state.pipeline_stage = "realtime_voice_buffering_audio".into();
-                                push_ledger(state, "output_receive", "audio_binary_received", |entry| {
-                                    entry.audio_chunk_index = output_metadata.as_ref().and_then(|metadata| metadata.audio_chunk_index);
-                                    entry.tts_job_id = output_metadata.as_ref().and_then(|metadata| metadata.tts_job_id.clone());
-                                    entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
-                                    entry.status = Some("received".into());
-                                    entry.message = Some(format!("bytes={bytes_len}"));
-                                });
+                                if debug_enabled {
+                                    push_ledger(state, "output_receive", "audio_binary_received", |entry| {
+                                        entry.audio_chunk_index =
+                                            output_metadata.as_ref().and_then(|metadata| metadata.audio_chunk_index);
+                                        entry.tts_job_id = output_metadata.as_ref().and_then(|metadata| metadata.tts_job_id.clone());
+                                        entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+                                        entry.status = Some("received".into());
+                                        entry.message = Some(format!("bytes={bytes_len}"));
+                                    });
+                                }
                             });
                             if let Some(metadata) = output_metadata {
                                 if metadata.expected_bytes.is_some_and(|expected| expected != bytes_len as u64) {
                                     patch_snapshot(&snapshot, |state| state.output_ack_mismatches += 1);
                                 }
-                                if let Err(drop) = playback_buffer.enqueue(metadata, bytes, latency_ms) {
-                                    patch_snapshot(&snapshot, |state| {
-                                        apply_output_drop_status(state, drop.status);
-                                        state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
-                                        push_ledger(state, "playback", "audio_chunk_dropped", |entry| {
-                                            entry.tts_job_id = drop.tts_job_id.clone();
-                                            entry.audio_chunk_index = Some(drop.audio_chunk_index);
-                                            entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
-                                            entry.status = Some(drop.status.into());
-                                        });
-                                    });
-                                    if let Some(event) = client_audio_played_event(
-                                        drop.chunk_id.clone(),
-                                        drop.tts_job_id.clone(),
-                                        drop.audio_chunk_index,
-                                        drop.status,
-                                        playback_buffer.queued_ms(format),
-                                    ) {
-                                        pending_client_events.push(event);
+                                let queued_ack_metadata = (!playback_ack_enabled).then(|| metadata.clone());
+                                match playback_buffer.enqueue(metadata, bytes, latency_ms) {
+                                    Ok(queued_index) => {
+                                        if let Some(metadata) = queued_ack_metadata {
+                                            let tts_job_id = metadata.tts_job_id.clone();
+                                            if let Some(event) = client_audio_played_event(
+                                                metadata.chunk_id,
+                                                metadata.tts_job_id,
+                                                queued_index,
+                                                playback_buffer.queued_ms(format),
+                                                "queued",
+                                            ) {
+                                                pending_client_events.push(event);
+                                                patch_snapshot(&snapshot, |state| {
+                                                    if debug_enabled {
+                                                        push_ledger(state, "playback", "client_audio_played_queued", |entry| {
+                                                            entry.tts_job_id = tts_job_id;
+                                                            entry.audio_chunk_index = Some(queued_index);
+                                                            entry.playback_queue_ms =
+                                                                Some(playback_buffer.queued_ms(format) as u64);
+                                                            entry.status = Some("queued".into());
+                                                        });
+                                                    }
+                                                });
+                                            }
+                                        }
                                     }
-                                    pending_client_events.push(client_audio_backpressure_event(
-                                        "drop",
-                                        playback_buffer.queued_ms(format),
-                                        drop.status,
-                                    ));
+                                    Err(drop) => {
+                                        patch_snapshot(&snapshot, |state| {
+                                            apply_output_drop_status(state, drop.status);
+                                            state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
+                                            if debug_enabled {
+                                                push_ledger(state, "playback", "audio_chunk_dropped", |entry| {
+                                                    entry.tts_job_id = drop.tts_job_id.clone();
+                                                    entry.audio_chunk_index = Some(drop.audio_chunk_index);
+                                                    entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+                                                    entry.status = Some(drop.status.into());
+                                                });
+                                            }
+                                        });
+                                        pending_client_events.push(client_audio_backpressure_event(
+                                            "drop",
+                                            playback_buffer.queued_ms(format),
+                                            drop.status,
+                                        ));
+                                    }
                                 }
                             } else {
                                 patch_snapshot(&snapshot, |state| state.output_ack_mismatches += 1);
@@ -932,22 +973,15 @@ async fn run_realtime_voice_stream(
                                     apply_output_drop_status(state, drop.status);
                                     state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
                                     state.backpressure_hint = Some("播放队列压力过高，已跳到最新连续音频窗口".into());
-                                    push_ledger(state, "playback", "audio_chunk_dropped", |entry| {
-                                        entry.tts_job_id = drop.tts_job_id.clone();
-                                        entry.audio_chunk_index = Some(drop.audio_chunk_index);
-                                        entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
-                                        entry.status = Some(drop.status.into());
-                                    });
+                                    if debug_enabled {
+                                        push_ledger(state, "playback", "audio_chunk_dropped", |entry| {
+                                            entry.tts_job_id = drop.tts_job_id.clone();
+                                            entry.audio_chunk_index = Some(drop.audio_chunk_index);
+                                            entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+                                            entry.status = Some(drop.status.into());
+                                        });
+                                    }
                                 });
-                                if let Some(event) = client_audio_played_event(
-                                    drop.chunk_id.clone(),
-                                    drop.tts_job_id.clone(),
-                                    drop.audio_chunk_index,
-                                    drop.status,
-                                    playback_buffer.queued_ms(format),
-                                ) {
-                                    pending_client_events.push(event);
-                                }
                                 pending_client_events.push(client_audio_backpressure_event(
                                     "drop",
                                     playback_buffer.queued_ms(format),
@@ -982,7 +1016,7 @@ async fn run_realtime_voice_stream(
                                         payload = %value,
                                         "FunSpeech realtime event received"
                                     );
-                                    patch_snapshot(&snapshot, |state| apply_json_event(state, &value));
+                                    patch_snapshot(&snapshot, |state| apply_json_event(state, &value, debug_enabled));
                                     if matches!(event_name(&value), Some("error" | "session.error")) {
                                         return Err(AppError::realtime_session(format!(
                                             "FunSpeech realtime error: {}",
@@ -1373,6 +1407,22 @@ fn funspeech_realtime_format(local_format: PcmFormat) -> PcmFormat {
     }
 }
 
+fn funspeech_realtime_parameters(params: &RuntimeParams) -> Value {
+    json!({
+        "volume": runtime_number(params, "volume").unwrap_or(50.0) as i64,
+        "speech_rate": runtime_number(params, "speechRate")
+            .or_else(|| runtime_number(params, "speech_rate"))
+            .unwrap_or(0.0),
+        "pitch_rate": runtime_number(params, "pitchRate")
+            .or_else(|| runtime_number(params, "pitch_rate"))
+            .unwrap_or(0.0) as i64,
+        "prompt": runtime_string(params, "prompt").unwrap_or_default(),
+        "emotion_control": runtime_string(params, "emotion_control")
+            .or_else(|| runtime_string(params, "emotionControl"))
+            .unwrap_or_else(|| "off".into()),
+    })
+}
+
 fn message_id() -> String {
     format!("vc{:x}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default())
 }
@@ -1712,6 +1762,8 @@ fn drain_one_playback_frame(
     last_playable_output_at: &mut Option<Instant>,
     output_timeline_started_at: Instant,
     pending_client_events: &mut Vec<Value>,
+    debug_enabled: bool,
+    playback_ack_enabled: bool,
 ) -> bool {
     let Some((expected, playback_frame)) = playback_buffer.pop_playable(format) else {
         return false;
@@ -1770,36 +1822,40 @@ fn drain_one_playback_frame(
         } else if let Err(error) = &virtual_mic_result {
             state.last_error = Some(error.to_string());
         }
-        push_ledger(state, "playback", "client_audio_played_queued", |entry| {
-            entry.tts_job_id = metadata.tts_job_id.clone();
-            entry.audio_chunk_index = Some(expected);
-            entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
-            entry.status = Some(if output_written { "played" } else { "queued" }.into());
-            entry.message = Some(format!(
-                "monitor={} virtual_mic={}",
-                monitor_written,
-                write_virtual_mic && virtual_mic_result.is_ok()
-            ));
-        });
+        if debug_enabled {
+            push_ledger(state, "playback", "client_audio_played_queued", |entry| {
+                entry.tts_job_id = metadata.tts_job_id.clone();
+                entry.audio_chunk_index = Some(expected);
+                entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+                entry.status = Some(if output_written { "played" } else { "queued" }.into());
+                entry.message = Some(format!(
+                    "monitor={} virtual_mic={}",
+                    monitor_written,
+                    write_virtual_mic && virtual_mic_result.is_ok()
+                ));
+            });
+        }
     });
-    if let Some(event) = client_audio_played_event(
-        metadata.chunk_id,
-        metadata.tts_job_id,
-        expected,
-        if output_written { "played" } else { "queued" },
-        playback_buffer.queued_ms(format),
-    ) {
-        pending_client_events.push(event);
+    if output_written && playback_ack_enabled {
+        if let Some(event) = client_audio_played_event(
+            metadata.chunk_id,
+            metadata.tts_job_id,
+            expected,
+            playback_buffer.queued_ms(format),
+            "played",
+        ) {
+            pending_client_events.push(event);
+        }
     }
-    true
+    output_written
 }
 
 fn client_audio_played_event(
     chunk_id: Option<String>,
     tts_job_id: Option<String>,
     audio_chunk_index: u64,
-    status: &str,
     playback_queue_ms: usize,
+    status: &str,
 ) -> Option<Value> {
     let chunk_id = chunk_id?;
     Some(json!({
@@ -1925,13 +1981,18 @@ impl RealtimeMonitorPlayer {
                     }
                 };
 
-                while let Ok(command) = rx.recv() {
-                    match command {
-                        RealtimeMonitorCommand::Frame {
+                loop {
+                    match rx.recv_timeout(Duration::from_millis(MONITOR_OUTPUT_IDLE_CHECK_MS)) {
+                        Ok(RealtimeMonitorCommand::Frame {
                             samples,
                             source_sample_rate,
-                        } => output.push_samples(&samples, source_sample_rate),
-                        RealtimeMonitorCommand::Stop => break,
+                        }) => {
+                            if let Err(error) = output.push_samples(&samples, source_sample_rate) {
+                                tracing::warn!(%error, "realtime monitor output write failed");
+                            }
+                        }
+                        Ok(RealtimeMonitorCommand::Stop) | Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(std_mpsc::RecvTimeoutError::Timeout) => output.suspend_if_idle(),
                     }
                 }
             })
@@ -1957,9 +2018,10 @@ impl RealtimeMonitorPlayer {
 }
 
 struct RealtimeMonitorOutput {
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<MonitorSampleBuffer>>,
     output_sample_rate: u32,
-    _stream: cpal::Stream,
+    stream: cpal::Stream,
+    playing: bool,
 }
 
 impl RealtimeMonitorOutput {
@@ -1971,7 +2033,7 @@ impl RealtimeMonitorOutput {
         let stream_config: StreamConfig = supported_config.into();
         let output_channels = stream_config.channels.max(1) as usize;
         let output_sample_rate = stream_config.sample_rate.0;
-        let buffer = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+        let buffer = Arc::new(Mutex::new(MonitorSampleBuffer::default()));
         let stream = build_monitor_stream(
             &device,
             &stream_config,
@@ -1979,31 +2041,114 @@ impl RealtimeMonitorOutput {
             output_channels,
             Arc::clone(&buffer),
         )?;
-        stream.play().map_err(|error| AppError::audio(error.to_string()))?;
         tracing::debug!(
             source_sample_rate = source_format.sample_rate,
             output_sample_rate,
             output_channels,
-            "realtime monitor output started"
+            "realtime monitor output initialized"
         );
         Ok(Self {
             buffer,
             output_sample_rate,
-            _stream: stream,
+            stream,
+            playing: false,
         })
     }
 
-    fn push_samples(&mut self, samples: &[f32], source_sample_rate: u32) {
+    fn push_samples(&mut self, samples: &[f32], source_sample_rate: u32) -> AppResult<()> {
         let samples = resample_samples_linear(samples, source_sample_rate, self.output_sample_rate);
         if samples.is_empty() {
-            return;
+            return Ok(());
         }
         let max_buffered_samples = self.output_sample_rate as usize * 4;
-        let mut buffer = self.buffer.lock().expect("realtime monitor buffer lock poisoned");
-        while buffer.len() + samples.len() > max_buffered_samples {
-            buffer.pop_front();
+        {
+            let mut buffer = self.buffer.lock().expect("realtime monitor buffer lock poisoned");
+            buffer.extend_bounded(&samples, max_buffered_samples);
         }
-        buffer.extend(samples);
+        self.resume_if_needed()
+    }
+
+    fn resume_if_needed(&mut self) -> AppResult<()> {
+        if self.playing {
+            return Ok(());
+        }
+        self.stream.play().map_err(|error| AppError::audio(error.to_string()))?;
+        self.playing = true;
+        Ok(())
+    }
+
+    fn suspend_if_idle(&mut self) {
+        if !self.playing || self.buffered_samples() > 0 {
+            return;
+        }
+        match self.stream.pause() {
+            Ok(()) => {
+                self.playing = false;
+            }
+            Err(error) => {
+                tracing::debug!(%error, "realtime monitor output pause not supported");
+            }
+        }
+    }
+
+    fn buffered_samples(&self) -> usize {
+        self.buffer
+            .lock()
+            .expect("realtime monitor buffer lock poisoned")
+            .available()
+    }
+}
+
+#[derive(Default)]
+struct MonitorSampleBuffer {
+    samples: Vec<f32>,
+    cursor: usize,
+}
+
+impl MonitorSampleBuffer {
+    fn extend_bounded(&mut self, samples: &[f32], max_samples: usize) {
+        self.compact_if_needed();
+        if samples.len() >= max_samples {
+            self.samples.clear();
+            self.cursor = 0;
+            self.samples
+                .extend_from_slice(&samples[samples.len().saturating_sub(max_samples)..]);
+            return;
+        }
+        let overflow = self.available() + samples.len();
+        if overflow > max_samples {
+            self.cursor = (self.cursor + overflow - max_samples).min(self.samples.len());
+            self.compact_if_needed();
+        }
+        self.samples.extend_from_slice(samples);
+    }
+
+    fn next_or_zero(&mut self) -> f32 {
+        if self.cursor >= self.samples.len() {
+            self.samples.clear();
+            self.cursor = 0;
+            return 0.0;
+        }
+        let sample = self.samples[self.cursor];
+        self.cursor += 1;
+        sample
+    }
+
+    fn available(&self) -> usize {
+        self.samples.len().saturating_sub(self.cursor)
+    }
+
+    fn compact_if_needed(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        if self.cursor >= self.samples.len() {
+            self.samples.clear();
+            self.cursor = 0;
+        } else if self.cursor > 4096 && self.cursor * 2 > self.samples.len() {
+            self.samples.drain(..self.cursor);
+            self.cursor = 0;
+        }
     }
 }
 
@@ -2034,7 +2179,7 @@ fn build_monitor_stream(
     config: &StreamConfig,
     sample_format: CpalSampleFormat,
     output_channels: usize,
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<MonitorSampleBuffer>>,
 ) -> AppResult<cpal::Stream> {
     let err_fn = |error| tracing::warn!(%error, "realtime monitor output stream error");
     match sample_format {
@@ -2078,11 +2223,11 @@ fn build_monitor_stream(
 fn write_monitor_output<T: MonitorSample>(
     output: &mut [T],
     output_channels: usize,
-    buffer: &Arc<Mutex<VecDeque<f32>>>,
+    buffer: &Arc<Mutex<MonitorSampleBuffer>>,
 ) {
     let mut samples = buffer.lock().expect("realtime monitor buffer lock poisoned");
     for frame in output.chunks_mut(output_channels.max(1)) {
-        let sample = samples.pop_front().unwrap_or(0.0);
+        let sample = samples.next_or_zero();
         for output_sample in frame {
             *output_sample = T::from_f32(sample);
         }
@@ -2500,9 +2645,27 @@ fn push_ledger(
     state.ledger.push(entry);
 }
 
-fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
+fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value, debug_enabled: bool) {
     if let Some(event) = event_name(value) {
         state.last_event = Some(event.to_string());
+        let runtime_event = matches!(
+            event,
+            "session_started"
+                | "configured"
+                | "ready"
+                | "voice_switched"
+                | "voice_updated"
+                | "parameters_updated"
+                | "params_updated"
+                | "session_completed"
+                | "closed"
+                | "session.error"
+                | "error"
+        );
+        if !debug_enabled && !runtime_event {
+            return;
+        }
+
         state.protocol_event = protocol_event_name(value);
         state.event_seq = json_u64(value, "seq");
         state.server_ts_ms = json_i64(value, "server_ts_ms");
@@ -2751,15 +2914,6 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                 });
                 state.last_prompt = Some("正在输出转换后语音".into());
             }
-            "client.audio_ack.received" => {
-                state.pipeline_stage = "client_audio_ack_received".into();
-                push_ledger(state, "playback_ack", event, |entry| {
-                    entry.playback_queue_ms = payload_u64(value, "playback_queue_ms");
-                    entry.audio_chunk_index = payload_u64(value, "audio_chunk_index");
-                    entry.status = Some("server_received".into());
-                });
-                state.last_prompt = Some("服务端已确认客户端收到变声音频".into());
-            }
             "tts.job_completed" | "tts_completed" => {
                 if event == "tts.job_completed" {
                     state.tts_completed_jobs += 1;
@@ -2805,6 +2959,9 @@ fn websocket_error(error: tokio_tungstenite::tungstenite::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::{f32::consts::TAU, time::Duration};
+
+    use cpal::traits::HostTrait;
     use serde_json::json;
 
     use crate::{
@@ -2817,10 +2974,11 @@ mod tests {
 
     use super::{
         apply_asr_event, apply_json_event, apply_output_drop_status, apply_tts_event, client_audio_backpressure_event,
-        client_audio_played_event, funspeech_realtime_format, is_final_asr_event, resample_samples_linear,
-        run_synthesis_message, start_synthesis_message, start_transcription_message, text_from_asr_event,
-        OrderedPlaybackBuffer, PendingOutputChunk, RealtimeInputFrameCutter, RealtimeStreamSnapshot,
-        PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_JITTER_PREBUFFER_MS, PLAYBACK_MAX_PENDING,
+        client_audio_played_event, funspeech_realtime_format, funspeech_realtime_parameters, is_final_asr_event,
+        resample_samples_linear, run_synthesis_message, start_synthesis_message, start_transcription_message,
+        text_from_asr_event, OrderedPlaybackBuffer, PendingOutputChunk, RealtimeInputFrameCutter,
+        RealtimeMonitorOutput, RealtimeStreamSnapshot, MONITOR_OUTPUT_IDLE_CHECK_MS, PLAYBACK_GAP_SKIP_PENDING,
+        PLAYBACK_JITTER_PREBUFFER_MS, PLAYBACK_MAX_PENDING,
     };
 
     #[test]
@@ -2861,6 +3019,27 @@ mod tests {
     }
 
     #[test]
+    fn realtime_voice_parameters_match_funspeech_tts_contract() {
+        let mut params = RuntimeParams::default();
+        params.values.insert("pitchRate".into(), json!(120));
+        params.values.insert("speechRate".into(), json!(-80));
+        params.values.insert("volume".into(), json!(55));
+        params.values.insert("strength".into(), json!(1));
+        params.values.insert("brightness".into(), json!(1));
+
+        let funspeech_params = funspeech_realtime_parameters(&params);
+
+        assert_eq!(funspeech_params["pitch_rate"], 120);
+        assert_eq!(funspeech_params["speech_rate"], -80.0);
+        assert_eq!(funspeech_params["volume"], 55);
+        assert_eq!(funspeech_params["prompt"], "");
+        assert_eq!(funspeech_params["emotion_control"], "off");
+        assert!(funspeech_params.get("pitchRate").is_none());
+        assert!(funspeech_params.get("strength").is_none());
+        assert!(funspeech_params.get("brightness").is_none());
+    }
+
+    #[test]
     fn realtime_resampler_converts_between_local_and_funspeech_rates() {
         let source = vec![0.0, 0.5, 1.0, 0.5, 0.0, -0.5];
 
@@ -2896,12 +3075,22 @@ mod tests {
     fn realtime_client_control_events_match_funspeech_protocol() {
         assert_eq!(PLAYBACK_JITTER_PREBUFFER_MS, 0);
 
-        let played = client_audio_played_event(Some("tts_1_chunk_1".into()), Some("tts_1".into()), 1, "played", 0)
+        let queued = client_audio_played_event(Some("tts_1_chunk_1".into()), Some("tts_1".into()), 1, 20, "queued")
+            .expect("chunk_id is required for FunSpeech playback flow control");
+        assert_eq!(queued["event"], "client.audio_played");
+        assert_eq!(queued["payload"]["chunk_id"], "tts_1_chunk_1");
+        assert_eq!(queued["payload"]["tts_job_id"], "tts_1");
+        assert_eq!(queued["payload"]["audio_chunk_index"], 1);
+        assert_eq!(queued["payload"]["playback_queue_ms"], 20);
+        assert_eq!(queued["payload"]["status"], "queued");
+
+        let played = client_audio_played_event(Some("tts_1_chunk_1".into()), Some("tts_1".into()), 1, 0, "played")
             .expect("chunk_id is required for FunSpeech playback flow control");
         assert_eq!(played["event"], "client.audio_played");
         assert_eq!(played["payload"]["chunk_id"], "tts_1_chunk_1");
         assert_eq!(played["payload"]["tts_job_id"], "tts_1");
         assert_eq!(played["payload"]["audio_chunk_index"], 1);
+        assert_eq!(played["payload"]["status"], "played");
 
         let backpressure = client_audio_backpressure_event("drop", 120, "playback_overflow_drop");
         assert_eq!(backpressure["event"], "client.audio_backpressure");
@@ -2909,7 +3098,7 @@ mod tests {
         assert_eq!(backpressure["payload"]["playback_queue_ms"], 120);
         assert_eq!(backpressure["payload"]["reason"], "playback_overflow_drop");
 
-        assert!(client_audio_played_event(None, Some("tts_1".into()), 1, "played", 0).is_none());
+        assert!(client_audio_played_event(None, Some("tts_1".into()), 1, 0, "queued").is_none());
     }
 
     #[test]
@@ -3113,12 +3302,17 @@ mod tests {
         apply_json_event(
             &mut snapshot,
             &json!({"type": "ready", "session_id": "rt-1", "voiceName": "robot"}),
+            false,
         );
         assert_eq!(snapshot.websocket_state, "running");
         assert_eq!(snapshot.task_id.as_deref(), Some("rt-1"));
         assert_eq!(snapshot.configured_voice_name, "robot");
 
-        apply_json_event(&mut snapshot, &json!({"type": "voice_updated", "voice_name": "girl"}));
+        apply_json_event(
+            &mut snapshot,
+            &json!({"type": "voice_updated", "voice_name": "girl"}),
+            false,
+        );
         assert_eq!(snapshot.configured_voice_name, "girl");
         assert_eq!(snapshot.last_event.as_deref(), Some("voice_updated"));
     }
@@ -3153,6 +3347,7 @@ mod tests {
                     "tts_job_id": "tts_3"
                 }
             }),
+            true,
         );
 
         assert_eq!(snapshot.task_id.as_deref(), Some("realtime_voice_1"));
@@ -3174,6 +3369,7 @@ mod tests {
                     "audio_chunk_index": 2
                 }
             }),
+            true,
         );
 
         assert_eq!(snapshot.audio_chunk_index, Some(2));
@@ -3195,6 +3391,7 @@ mod tests {
                     "queue_ms": 120
                 }
             }),
+            true,
         );
 
         assert_eq!(snapshot.asr_committed_segments, 1);
@@ -3210,7 +3407,84 @@ mod tests {
         apply_json_event(
             &mut snapshot,
             &json!({"event": "vad.speech_started", "payload": {"utterance_id": "utt_2"}}),
+            true,
         );
         assert_eq!(snapshot.vad_speech_frames, 1);
+    }
+
+    #[test]
+    fn realtime_voice_debug_gate_skips_detailed_counters() {
+        let session = RealtimeSession {
+            session_id: "session-1".into(),
+            trace_id: "trace-1".into(),
+            voice_name: "desktop_voice".into(),
+            runtime_params: RuntimeParams::default(),
+            status: RealtimeSessionStatus::Running,
+            websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let mut snapshot = RealtimeStreamSnapshot::pending(&session);
+
+        apply_json_event(
+            &mut snapshot,
+            &json!({
+                "event": "asr.segment_committed",
+                "payload": {
+                    "segment_id": "utt_1_seg_3",
+                    "first_input_frame_index": 41,
+                    "last_input_frame_index": 80
+                }
+            }),
+            false,
+        );
+
+        assert_eq!(snapshot.last_event.as_deref(), Some("asr.segment_committed"));
+        assert_eq!(snapshot.asr_committed_segments, 0);
+        assert!(snapshot.ledger.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires a local output audio device"]
+    fn realtime_monitor_output_local_smoke_plays_and_idles() {
+        let Ok(devices) = cpal::default_host().output_devices() else {
+            eprintln!("skipping realtime monitor smoke: output devices cannot be listed");
+            return;
+        };
+        let format = PcmFormat::default();
+        let Some(mut output) =
+            devices
+                .into_iter()
+                .find_map(|device| match RealtimeMonitorOutput::start(device, format) {
+                    Ok(output) => Some(output),
+                    Err(error) => {
+                        eprintln!("skipping unavailable realtime monitor output candidate: {error}");
+                        None
+                    }
+                })
+        else {
+            eprintln!("skipping realtime monitor smoke: no local output device accepted a test stream");
+            return;
+        };
+
+        assert!(!output.playing);
+        let samples = sine_frame(format, 440.0, 0.08);
+        output
+            .push_samples(&samples, format.sample_rate)
+            .expect("realtime monitor output accepts one frame");
+        assert!(output.playing);
+
+        std::thread::sleep(Duration::from_millis(MONITOR_OUTPUT_IDLE_CHECK_MS * 3));
+        output.suspend_if_idle();
+
+        assert_eq!(output.buffered_samples(), 0);
+    }
+
+    fn sine_frame(format: PcmFormat, hz: f32, gain: f32) -> Vec<f32> {
+        let sample_rate = format.sample_rate.max(1) as f32;
+        (0..format.samples_per_frame())
+            .map(|index| ((index as f32 / sample_rate) * hz * TAU).sin() * gain)
+            .collect()
     }
 }

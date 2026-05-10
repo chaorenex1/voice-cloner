@@ -115,6 +115,10 @@ pub struct RuntimeSettings {
     pub audio_frame_ms: u16,
     #[serde(default)]
     pub realtime_voice_mode: RealtimeVoiceMode,
+    #[serde(default)]
+    pub realtime_debug_enabled: bool,
+    #[serde(default)]
+    pub realtime_playback_ack_enabled: bool,
 }
 
 impl Default for RuntimeSettings {
@@ -124,6 +128,8 @@ impl Default for RuntimeSettings {
             default_sample_rate: 48_000,
             audio_frame_ms: 20,
             realtime_voice_mode: RealtimeVoiceMode::RealtimeVoice,
+            realtime_debug_enabled: false,
+            realtime_playback_ack_enabled: false,
         }
     }
 }
@@ -189,6 +195,8 @@ pub struct RuntimeSettingsPatch {
     pub default_sample_rate: Option<u32>,
     pub audio_frame_ms: Option<u16>,
     pub realtime_voice_mode: Option<RealtimeVoiceMode>,
+    pub realtime_debug_enabled: Option<bool>,
+    pub realtime_playback_ack_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -247,6 +255,12 @@ impl AppSettingsPatch {
             if let Some(realtime_voice_mode) = runtime.realtime_voice_mode {
                 settings.runtime.realtime_voice_mode = realtime_voice_mode;
             }
+            if let Some(realtime_debug_enabled) = runtime.realtime_debug_enabled {
+                settings.runtime.realtime_debug_enabled = realtime_debug_enabled;
+            }
+            if let Some(realtime_playback_ack_enabled) = runtime.realtime_playback_ack_enabled {
+                settings.runtime.realtime_playback_ack_enabled = realtime_playback_ack_enabled;
+            }
         }
 
         settings
@@ -267,6 +281,7 @@ mod tests {
             settings.runtime.realtime_voice_mode,
             super::RealtimeVoiceMode::RealtimeVoice
         );
+        assert!(!settings.runtime.realtime_playback_ack_enabled);
         assert!(settings.validate().is_ok());
     }
 
@@ -281,6 +296,7 @@ mod tests {
             }),
             runtime: Some(RuntimeSettingsPatch {
                 default_output_format: Some("pcm".into()),
+                realtime_playback_ack_enabled: Some(true),
                 ..Default::default()
             }),
             ..Default::default()
@@ -290,6 +306,7 @@ mod tests {
 
         assert_eq!(settings.device.input_device_id.as_deref(), Some("mic-1"));
         assert_eq!(settings.runtime.default_output_format, "pcm");
+        assert!(settings.runtime.realtime_playback_ack_enabled);
         assert!(settings.device.virtual_mic_enabled);
         assert_eq!(settings.device.virtual_mic_device_id.as_deref(), Some("virtual-mic-1"));
     }

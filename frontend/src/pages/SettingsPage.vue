@@ -12,6 +12,7 @@ const {
   updateDeviceSettings,
   updateBackendSettings,
   updateFunSpeechSettings,
+  updateRuntimeSettings,
   saveSettings,
 } = useSettingsStore();
 
@@ -67,6 +68,41 @@ watch(() => props.returnTarget, ensureDeviceSectionForReturn);
         @update="updateDeviceSettings"
         @commit="saveSettings"
       />
+      <section class="settings-card">
+        <div class="settings-card__header">
+          <p class="module-eyebrow">Realtime Debug</p>
+          <span>控制实时诊断信息和 ACK 时机。默认入本地播放队列即确认。</span>
+        </div>
+
+        <div v-if="state.settings" class="settings-form">
+          <label class="toggle-field">
+            <input
+              :checked="state.settings.runtime.realtimePlaybackAckEnabled"
+              type="checkbox"
+              @change="
+                updateRuntimeSettings({
+                  realtimePlaybackAckEnabled: ($event.target as HTMLInputElement).checked,
+                })
+              "
+              @blur="saveSettings"
+            />
+            <span>ACK 等到成功播放/写入后再发送</span>
+          </label>
+          <label class="toggle-field">
+            <input
+              :checked="state.settings.runtime.realtimeDebugEnabled"
+              type="checkbox"
+              @change="
+                updateRuntimeSettings({
+                  realtimeDebugEnabled: ($event.target as HTMLInputElement).checked,
+                })
+              "
+              @blur="saveSettings"
+            />
+            <span>启用实时调试信息</span>
+          </label>
+        </div>
+      </section>
     </div>
 
     <BackendSettingsForm

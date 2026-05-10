@@ -156,6 +156,8 @@ pub async fn run_realtime_full_chain_test(
             state.virtual_mic_handle(),
             settings.device.virtual_mic_enabled,
             RealtimeStreamMode::RealtimeVoice,
+            true,
+            true,
         )
         .await;
     if let Err(error) = start_result {

@@ -2,7 +2,6 @@ import { computed, reactive } from 'vue';
 import {
   createRealtimeSession,
   getRealtimeStreamSnapshot,
-  runRealtimeFullChainSimulation,
   startRealtimeInput,
   startRealtimeFileInput,
   startRealtimeMonitor,
@@ -23,7 +22,6 @@ import {
 } from '../utils/realtime-debug';
 import type {
   RealtimeSession,
-  RealtimeFullChainTestReport,
   RealtimeStreamSnapshot,
   RuntimeParams,
 } from '../utils/types/realtime';
@@ -31,9 +29,9 @@ import type { AppSettings } from '../utils/types/settings';
 import type { VoiceSummary } from '../utils/types/voice';
 
 export interface RealtimeParamState {
-  pitch: number;
-  strength: number;
-  brightness: number;
+  pitchRate: number;
+  speechRate: number;
+  volume: number;
 }
 
 export interface RealtimeState {
@@ -45,7 +43,8 @@ export interface RealtimeState {
   params: RealtimeParamState;
   session: RealtimeSession | null;
   snapshot: RealtimeStreamSnapshot | null;
-  fullChainReport: RealtimeFullChainTestReport | null;
+  inputCapturing: boolean;
+  monitoring: boolean;
   loading: boolean;
   busy: boolean;
   lastMessage: string;
@@ -72,13 +71,14 @@ const state = reactive<RealtimeState>({
   inputSource: 'microphone',
   selectedInputFile: null,
   params: {
-    pitch: 1,
-    strength: 1,
-    brightness: 1,
+    pitchRate: 0,
+    speechRate: 0,
+    volume: 50,
   },
   session: null,
   snapshot: null,
-  fullChainReport: null,
+  inputCapturing: false,
+  monitoring: false,
   loading: false,
   busy: false,
   lastMessage: '实时链路等待加载',
@@ -90,9 +90,11 @@ const LAST_REALTIME_VOICE_STORAGE_KEY = 'voice-cloner:last-realtime-voice-name';
 function runtimeParams(): RuntimeParams {
   return {
     values: {
-      pitch: state.params.pitch,
-      strength: state.params.strength,
-      brightness: state.params.brightness,
+      pitchRate: state.params.pitchRate,
+      speechRate: state.params.speechRate,
+      volume: state.params.volume,
+      prompt: '',
+      emotionControl: 'off',
     },
   };
 }
@@ -148,11 +150,18 @@ export function useRealtimeStore() {
   );
 
   const isRunning = computed(() => isRunningStatus(state.session?.status));
+  const isRealtimeDebugEnabled = computed(() =>
+    Boolean(state.settings?.runtime.realtimeDebugEnabled)
+  );
   const isInputCapturing = computed(() =>
-    ['capturing', 'starting'].includes(state.snapshot?.inputState ?? '')
+    isRealtimeDebugEnabled.value
+      ? ['capturing', 'starting'].includes(state.snapshot?.inputState ?? '')
+      : state.inputCapturing
   );
   const isMonitoring = computed(() =>
-    ['listening', 'starting'].includes(state.snapshot?.monitorState ?? '')
+    isRealtimeDebugEnabled.value
+      ? ['listening', 'starting'].includes(state.snapshot?.monitorState ?? '')
+      : state.monitoring
   );
   const canControlStream = computed(() => Boolean(state.session) && isRunning.value && !state.busy);
 
@@ -182,6 +191,8 @@ export function useRealtimeStore() {
         virtualMicDeviceId: settings.device.virtualMicDeviceId,
         defaultSampleRate: settings.runtime.defaultSampleRate,
         audioFrameMs: settings.runtime.audioFrameMs,
+        realtimeDebugEnabled: settings.runtime.realtimeDebugEnabled,
+        realtimePlaybackAckEnabled: settings.runtime.realtimePlaybackAckEnabled,
       });
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
@@ -214,9 +225,14 @@ export function useRealtimeStore() {
       logRealtimeDebug('store:start:session-created', summarizeRealtimeSession(created));
       state.session = await startRealtimeSession(created);
       logRealtimeDebug('store:start:session-running', summarizeRealtimeSession(state.session));
-      state.snapshot = await getRealtimeStreamSnapshot(state.session);
-      logRealtimeDebug('store:start:snapshot-ready', summarizeRealtimeSnapshot(state.snapshot));
-      state.lastMessage = state.snapshot.lastPrompt ?? '实时会话已连接，点击麦克风开始采集输入音频';
+      if (isRealtimeDebugEnabled.value) {
+        state.snapshot = await getRealtimeStreamSnapshot(state.session);
+        logRealtimeDebug('store:start:snapshot-ready', summarizeRealtimeSnapshot(state.snapshot));
+        state.lastMessage = state.snapshot.lastPrompt ?? '实时会话已连接，点击麦克风开始采集输入音频';
+      } else {
+        state.snapshot = null;
+        state.lastMessage = '实时会话已连接，点击麦克风开始采集输入音频';
+      }
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
       state.lastMessage = '实时链路启动失败';
@@ -244,6 +260,8 @@ export function useRealtimeStore() {
     try {
       state.session = await stopRealtimeSession(state.session);
       state.snapshot = null;
+      state.inputCapturing = false;
+      state.monitoring = false;
       state.lastMessage = '实时会话、麦克风输入和监听输出已停止';
       logRealtimeDebug('store:stop:success', summarizeRealtimeSession(state.session));
     } catch (error) {
@@ -266,7 +284,9 @@ export function useRealtimeStore() {
     const wasCapturing = isInputCapturing.value;
     try {
       if (wasCapturing) {
-        state.snapshot = await stopRealtimeInput(state.session);
+        const snapshot = await stopRealtimeInput(state.session);
+        state.snapshot = isRealtimeDebugEnabled.value ? snapshot : null;
+        state.inputCapturing = false;
       } else if (state.inputSource === 'localFile') {
         if (!state.selectedInputFile) {
           state.lastError = '请选择本地 WAV 音频后再开始模拟';
@@ -274,12 +294,16 @@ export function useRealtimeStore() {
           return;
         }
         const audioBytes = Array.from(new Uint8Array(await state.selectedInputFile.arrayBuffer()));
-        state.snapshot = await startRealtimeFileInput(state.session, {
+        const snapshot = await startRealtimeFileInput(state.session, {
           fileName: state.selectedInputFile.name,
           audioBytes,
         });
+        state.snapshot = isRealtimeDebugEnabled.value ? snapshot : null;
+        state.inputCapturing = true;
       } else {
-        state.snapshot = await startRealtimeInput(state.session);
+        const snapshot = await startRealtimeInput(state.session);
+        state.snapshot = isRealtimeDebugEnabled.value ? snapshot : null;
+        state.inputCapturing = true;
       }
       state.lastMessage = wasCapturing
         ? '麦克风输入已关闭，会话保持连接'
@@ -288,65 +312,13 @@ export function useRealtimeStore() {
           : '麦克风正在采集输入音频';
       logRealtimeDebug('store:toggle-input:success', {
         action: wasCapturing ? 'stop' : 'start',
-        snapshot: summarizeRealtimeSnapshot(state.snapshot),
+        snapshot: state.snapshot ? summarizeRealtimeSnapshot(state.snapshot) : null,
       });
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
       state.lastMessage = '麦克风输入控制失败';
       logRealtimeError('store:toggle-input:error', error, {
         session: state.session ? summarizeRealtimeSession(state.session) : null,
-      });
-    } finally {
-      state.busy = false;
-    }
-  }
-
-  async function runFullChainSimulation(): Promise<void> {
-    if (!state.selectedVoiceName) {
-      state.lastError = '请选择音色后再运行全链路压测';
-      return;
-    }
-    if (!state.selectedInputFile) {
-      state.lastError = '请选择 WAV 音频后再运行全链路压测';
-      return;
-    }
-    state.busy = true;
-    state.lastError = null;
-    state.fullChainReport = null;
-    state.lastMessage = '正在执行前端 -> Tauri -> FunSpeech -> 播放 ACK 全链路压测';
-    try {
-      const audioBytes = Array.from(new Uint8Array(await state.selectedInputFile.arrayBuffer()));
-      const report = await runRealtimeFullChainSimulation({
-        voiceName: state.selectedVoiceName,
-        fileName: state.selectedInputFile.name,
-        audioBytes,
-        runtimeParams: runtimeParams(),
-        backendBaseUrl: state.settings?.backend.realtime.baseUrl ?? null,
-        startMonitor: state.settings?.device.monitorEnabled ?? true,
-        pollIntervalMs: 500,
-        drainGraceMs: 6000,
-        maxDurationMs: 180000,
-      });
-      state.fullChainReport = report;
-      state.snapshot = report.timeline[report.timeline.length - 1]?.snapshot ?? state.snapshot;
-      state.lastMessage = `全链路压测完成：${report.summary.verdict}，收 ${report.summary.outputReceivedFrames} / 播 ${report.summary.outputWrittenFrames}`;
-      if (report.summary.verdict === 'fail') {
-        state.lastError = report.summary.reasons[0] ?? '全链路压测失败';
-      }
-      logRealtimeDebug('store:full-chain:success', {
-        verdict: report.summary.verdict,
-        reasons: report.summary.reasons,
-        sessionId: report.sessionId,
-        outputReceivedFrames: report.summary.outputReceivedFrames,
-        outputWrittenFrames: report.summary.outputWrittenFrames,
-        outputMaxFrameGapMs: report.summary.outputMaxFrameGapMs,
-      });
-    } catch (error) {
-      state.lastError = error instanceof Error ? error.message : String(error);
-      state.lastMessage = '全链路压测失败';
-      logRealtimeError('store:full-chain:error', error, {
-        selectedVoiceName: state.selectedVoiceName,
-        selectedInputFile: state.selectedInputFile.name,
       });
     } finally {
       state.busy = false;
@@ -374,13 +346,15 @@ export function useRealtimeStore() {
     state.lastError = null;
     const wasMonitoring = isMonitoring.value;
     try {
-      state.snapshot = wasMonitoring
+      const snapshot = wasMonitoring
         ? await stopRealtimeMonitor(state.session)
         : await startRealtimeMonitor(state.session);
+      state.snapshot = isRealtimeDebugEnabled.value ? snapshot : null;
+      state.monitoring = !wasMonitoring;
       state.lastMessage = wasMonitoring ? '监听输出已停止' : '正在通过监听输出设备播放转换后语音';
       logRealtimeDebug('store:toggle-monitor:success', {
         action: wasMonitoring ? 'stop' : 'start',
-        snapshot: summarizeRealtimeSnapshot(state.snapshot),
+        snapshot: state.snapshot ? summarizeRealtimeSnapshot(state.snapshot) : null,
       });
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
@@ -413,7 +387,9 @@ export function useRealtimeStore() {
     state.busy = true;
     try {
       state.session = await switchRealtimeVoice(state.session.sessionId, voiceName);
-      await refreshSnapshot();
+      if (isRealtimeDebugEnabled.value) {
+        await refreshSnapshot();
+      }
       state.lastMessage = `FunSpeech 已切换到 ${voiceName}`;
       logRealtimeDebug('store:select-voice:success', {
         session: summarizeRealtimeSession(state.session),
@@ -464,7 +440,7 @@ export function useRealtimeStore() {
   }
 
   async function refreshSnapshot(): Promise<void> {
-    if (!state.session || !isRunning.value) {
+    if (!state.session || !isRunning.value || !isRealtimeDebugEnabled.value) {
       return;
     }
     try {
@@ -490,6 +466,7 @@ export function useRealtimeStore() {
     state,
     selectedVoice,
     isRunning,
+    isRealtimeDebugEnabled,
     isInputCapturing,
     isMonitoring,
     canControlStream,
@@ -498,7 +475,6 @@ export function useRealtimeStore() {
     start,
     stop,
     toggleInput,
-    runFullChainSimulation,
     setInputSource,
     setSelectedInputFile,
     toggleMonitor,

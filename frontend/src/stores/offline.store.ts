@@ -1,5 +1,5 @@
 import { computed, reactive } from 'vue';
-import { save } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   cancelOfflineJob,
   clearOfflineJobs,
@@ -30,6 +30,8 @@ export interface OfflineState {
   inputType: OfflineInputType;
   text: string;
   selectedFile: File | null;
+  selectedAudioPath: string | null;
+  selectedAudioFileName: string | null;
   selectedVoiceName: string | null;
   selectedEmotionLabel: string | null;
   outputFormat: 'wav';
@@ -62,6 +64,8 @@ const state = reactive<OfflineState>({
   inputType: 'audio',
   text: '',
   selectedFile: null,
+  selectedAudioPath: null,
+  selectedAudioFileName: null,
   selectedVoiceName: null,
   selectedEmotionLabel: null,
   outputFormat: 'wav',
@@ -106,6 +110,10 @@ function isSupportedAudioFile(file: File): boolean {
   return /\.wav$/i.test(file.name);
 }
 
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 function validateBeforeSubmit(): string | null {
   if (!state.selectedVoiceName) {
     return '请选择目标音色';
@@ -121,16 +129,24 @@ function validateBeforeSubmit(): string | null {
     return null;
   }
 
-  if (!state.selectedFile) {
+  const selectedFile = state.selectedFile;
+  const selectedAudioPath = state.selectedAudioPath;
+  if (!selectedFile && !selectedAudioPath) {
     return '请选择 WAV 音频文件';
   }
-  if (!isSupportedAudioFile(state.selectedFile)) {
+  if (selectedAudioPath && !/\.wav$/i.test(selectedAudioPath)) {
     return '音频格式当前只支持 WAV';
   }
-  if (state.selectedFile.size <= 0) {
+  if (selectedAudioPath) {
+    return null;
+  }
+  if (!selectedFile || !isSupportedAudioFile(selectedFile)) {
+    return '音频格式当前只支持 WAV';
+  }
+  if (selectedFile.size <= 0) {
     return '音频文件为空';
   }
-  if (state.selectedFile.size > MAX_AUDIO_BYTES) {
+  if (selectedFile.size > MAX_AUDIO_BYTES) {
     return '音频文件不能超过 50MB';
   }
   return null;
@@ -192,6 +208,9 @@ export function useOfflineStore() {
   const selectedEmotion = computed(() =>
     state.emotionOptions.find((emotion) => emotion.label === state.selectedEmotionLabel)
   );
+  const selectedAudioLabel = computed(
+    () => state.selectedAudioFileName ?? state.selectedFile?.name ?? '拖入或点击选择一段人声音频'
+  );
 
   const canSubmit = computed(() => !state.busy && validateBeforeSubmit() === null);
 
@@ -205,8 +224,30 @@ export function useOfflineStore() {
 
   function setSelectedFile(file: File | null): void {
     state.selectedFile = file;
+    state.selectedAudioPath = null;
+    state.selectedAudioFileName = file?.name ?? null;
     state.lastError = null;
     state.lastMessage = file ? `已选择音频：${file.name}` : '已清空音频输入';
+  }
+
+  async function chooseAudioFile(): Promise<void> {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'WAV Audio', extensions: ['wav'] }],
+      });
+      if (typeof selected !== 'string') {
+        return;
+      }
+      state.selectedFile = null;
+      state.selectedAudioPath = selected;
+      state.selectedAudioFileName = fileNameFromPath(selected);
+      state.lastError = null;
+      state.lastMessage = `已选择音频：${state.selectedAudioFileName}`;
+    } catch (error) {
+      state.lastError = messageFromError(error);
+      state.lastMessage = '系统文件选择器打开失败，可使用页面文件选择作为备用';
+    }
   }
 
   function canPreviewJob(job: OfflineJob | null): boolean {
@@ -264,7 +305,16 @@ export function useOfflineStore() {
     state.lastError = null;
     try {
       let created: OfflineJob;
-      if (state.inputType === 'audio' && state.selectedFile) {
+      if (state.inputType === 'audio' && state.selectedAudioPath) {
+        state.lastMessage = '正在创建离线任务...';
+        created = await createOfflineAudioJob({
+          fileName: state.selectedAudioFileName ?? fileNameFromPath(state.selectedAudioPath),
+          inputRef: state.selectedAudioPath,
+          voiceName: state.selectedVoiceName!,
+          runtimeParams: runtimeParams(),
+          outputFormat: state.outputFormat,
+        });
+      } else if (state.inputType === 'audio' && state.selectedFile) {
         state.lastMessage = '正在导入音频并创建离线任务...';
         const bytes = Array.from(new Uint8Array(await state.selectedFile.arrayBuffer()));
         created = await createOfflineAudioJob({
@@ -441,11 +491,13 @@ export function useOfflineStore() {
     state,
     selectedVoice,
     selectedEmotion,
+    selectedAudioLabel,
     canSubmit,
     completedJobs,
     load,
     setInputType,
     setSelectedFile,
+    chooseAudioFile,
     submit,
     retry,
     cancel,

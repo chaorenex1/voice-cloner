@@ -65,6 +65,8 @@ pub async fn start_realtime_session(state: State<'_, AppState>, session_id: Stri
         input_device_id = ?settings.device.input_device_id,
         virtual_mic_device_id = ?settings.device.virtual_mic_device_id,
         realtime_voice_mode = ?settings.runtime.realtime_voice_mode,
+        realtime_debug_enabled = settings.runtime.realtime_debug_enabled,
+        realtime_playback_ack_enabled = settings.runtime.realtime_playback_ack_enabled,
         "realtime audio settings resolved"
     );
     if settings.device.virtual_mic_enabled {
@@ -91,6 +93,8 @@ pub async fn start_realtime_session(state: State<'_, AppState>, session_id: Stri
             state.virtual_mic_handle(),
             settings.device.virtual_mic_enabled,
             RealtimeStreamMode::RealtimeVoice,
+            settings.runtime.realtime_debug_enabled,
+            settings.runtime.realtime_playback_ack_enabled,
         )
         .await
     {

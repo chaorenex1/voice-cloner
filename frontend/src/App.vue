@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core';
-import { computed, onMounted, ref } from 'vue';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import OfflineVoicePage from './pages/OfflineVoicePage.vue';
 import RealtimeVoicePage from './pages/RealtimeVoicePage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import VoiceLibraryPage from './pages/VoiceLibraryPage.vue';
 import { getSettings } from './services/tauri/settings';
+import type { OfflineJob } from './utils/types/offline';
 
 interface AppSummary {
   name: string;
@@ -54,6 +56,8 @@ const appSummary = ref<AppSummary | null>(null);
 const activeNavKey = ref(defaultNavItem.key);
 const settingsReturnNavKey = ref<string | null>(null);
 const backendState = ref('正在连接桌面运行时...');
+const notifiedOfflineJobIds = new Set<string>();
+let stopOfflineNotificationListener: UnlistenFn | null = null;
 
 const currentModule = computed(
   () => navItems.find((item) => item.key === activeNavKey.value) ?? defaultNavItem
@@ -64,6 +68,7 @@ const hasImplementedPage = computed(() =>
 );
 
 onMounted(async () => {
+  void startOfflineCompletionNotifications();
   void getSettings().catch(() => undefined);
   try {
     appSummary.value = await invoke<AppSummary>('get_app_summary');
@@ -71,6 +76,11 @@ onMounted(async () => {
   } catch (_error) {
     backendState.value = '前端预览模式';
   }
+});
+
+onBeforeUnmount(() => {
+  stopOfflineNotificationListener?.();
+  stopOfflineNotificationListener = null;
 });
 
 function openDeviceSettingsFromRealtime(): void {
@@ -81,6 +91,45 @@ function openDeviceSettingsFromRealtime(): void {
 function returnFromSettings(): void {
   activeNavKey.value = settingsReturnNavKey.value ?? defaultNavItem.key;
   settingsReturnNavKey.value = null;
+}
+
+async function startOfflineCompletionNotifications(): Promise<void> {
+  if (stopOfflineNotificationListener) {
+    return;
+  }
+  void ensureNotificationPermission();
+  try {
+    stopOfflineNotificationListener = await listen<OfflineJob>('offline-job-updated', (event) => {
+      const job = event.payload;
+      if (job.status !== 'completed' || notifiedOfflineJobIds.has(job.jobId)) {
+        return;
+      }
+      notifiedOfflineJobIds.add(job.jobId);
+      void showOfflineCompletionNotification(job);
+    });
+  } catch (_error) {
+    stopOfflineNotificationListener = null;
+  }
+}
+
+async function ensureNotificationPermission(): Promise<void> {
+  if ('Notification' in window && Notification.permission === 'default') {
+    await Notification.requestPermission();
+  }
+}
+
+async function showOfflineCompletionNotification(job: OfflineJob): Promise<void> {
+  if (!('Notification' in window)) {
+    return;
+  }
+  if (Notification.permission !== 'granted') {
+    return;
+  }
+  const name = job.inputFileName ?? (job.inputType === 'text' ? '文本任务' : '音频任务');
+  new Notification('Offline Voice 完成', {
+    body: `${name} 已完成离线转换。`,
+    tag: `offline-job-${job.jobId}`,
+  });
 }
 </script>
 
@@ -122,7 +171,11 @@ function returnFromSettings(): void {
       </div>
     </aside>
 
-    <main class="main-content" aria-live="polite">
+    <main
+      class="main-content"
+      :class="{ 'main-content--locked': ['realtime', 'offline'].includes(activeNavKey) }"
+      aria-live="polite"
+    >
       <VoiceLibraryPage v-if="activeNavKey === 'voices'" />
       <RealtimeVoicePage
         v-else-if="activeNavKey === 'realtime'"

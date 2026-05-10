@@ -13,7 +13,7 @@ const mockSettings: AppSettings = {
     outputDeviceId: 'headphones',
     monitorEnabled: true,
     virtualMicEnabled: true,
-    virtualMicDeviceId: 'vb_cable_input',
+    virtualMicDeviceId: 'vb_cable_speaker',
   },
   backend: {
     llm: {
@@ -54,18 +54,21 @@ const mockSettings: AppSettings = {
     defaultSampleRate: 48000,
     audioFrameMs: 20,
     realtimeVoiceMode: 'realtimeVoice',
+    realtimeDebugEnabled: false,
+    realtimePlaybackAckEnabled: false,
   },
 };
 
 const mockAudioDevices: AudioDeviceSnapshot = {
   inputDevices: [
     { id: 'shure_mv7', name: 'Shure MV7', kind: 'input', isDefault: true },
-    { id: 'vb_cable_input', name: 'VB-Cable Virtual Microphone', kind: 'input', isDefault: false },
+    { id: 'vb_cable_mic', name: 'VB-Cable Virtual Microphone', kind: 'input', isDefault: false },
     { id: 'macbook_mic', name: 'Built-in Microphone', kind: 'input', isDefault: false },
     { id: 'usb_interface', name: 'USB Audio Interface', kind: 'input', isDefault: false },
   ],
   outputDevices: [
     { id: 'headphones', name: 'Headphones', kind: 'output', isDefault: true },
+    { id: 'vb_cable_speaker', name: 'VB-Cable Virtual Speaker', kind: 'output', isDefault: false },
     { id: 'studio_monitor', name: 'Studio Monitor', kind: 'output', isDefault: false },
     { id: 'built_in_speaker', name: 'Built-in Speaker', kind: 'output', isDefault: false },
   ],

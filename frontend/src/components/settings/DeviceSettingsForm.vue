@@ -90,7 +90,7 @@ function normalizeDeviceId(value: string): string | null {
       </label>
 
       <label class="form-field">
-        <span>虚拟麦克风设备</span>
+        <span>虚拟麦克风</span>
         <select
           :disabled="!settings.virtualMicEnabled"
           :value="settings.virtualMicDeviceId ?? ''"
@@ -101,8 +101,7 @@ function normalizeDeviceId(value: string): string | null {
           "
           @blur="$emit('commit')"
         >
-          <option value="">选择输入设备作为虚拟麦克风</option>
-          <option v-for="device in devices.inputDevices" :key="device.id" :value="device.id">
+          <option v-for="device in devices.outputDevices" :key="device.id" :value="device.id">
             {{ device.name }}{{ device.isDefault ? '（默认）' : '' }}
           </option>
         </select>

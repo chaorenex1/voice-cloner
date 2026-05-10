@@ -37,8 +37,9 @@ export interface OfflineJob {
 }
 
 export interface CreateOfflineAudioJobRequest {
-  fileName: string;
-  inputBytes: number[];
+  fileName?: string;
+  inputRef?: string;
+  inputBytes?: number[];
   voiceName: string;
   runtimeParams: RuntimeParams;
   outputFormat?: 'wav';

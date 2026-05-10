@@ -47,6 +47,8 @@ export interface RuntimeSettings {
   defaultSampleRate: number;
   audioFrameMs: number;
   realtimeVoiceMode: RealtimeVoiceMode;
+  realtimeDebugEnabled: boolean;
+  realtimePlaybackAckEnabled: boolean;
 }
 
 export interface AppSettings {

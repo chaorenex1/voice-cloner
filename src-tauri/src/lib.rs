@@ -1,6 +1,7 @@
 pub mod app;
 pub mod audio;
 pub mod clients;
+pub mod desktop;
 pub mod domain;
 pub mod services;
 pub mod storage;
@@ -34,6 +35,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            desktop::window_manager::setup(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             tauri_api::app_commands::get_app_summary,
             tauri_api::app_commands::get_app_runtime_info,

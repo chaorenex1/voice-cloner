@@ -59,8 +59,8 @@ export async function createOfflineAudioJob(
     () =>
       mockJob({
         inputType: 'audio',
-        inputRef: request.fileName,
-        inputFileName: request.fileName,
+        inputRef: request.inputRef ?? request.fileName ?? '',
+        inputFileName: request.fileName ?? request.inputRef?.split(/[\\/]/).pop() ?? null,
         voiceName: request.voiceName,
         runtimeParams: request.runtimeParams,
         outputFormat: request.outputFormat ?? 'wav',

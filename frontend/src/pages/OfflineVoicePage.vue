@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useOfflineStore } from '../stores/offline.store';
 import type { OfflineJob } from '../utils/types/offline';
 
 const offline = useOfflineStore();
+const INITIAL_HISTORY_COUNT = 8;
+const HISTORY_BATCH_SIZE = 8;
+const visibleHistoryCount = ref(INITIAL_HISTORY_COUNT);
 
 const currentJob = computed(() => offline.state.currentJob);
 const statusLabel = computed(() => labelForStatus(currentJob.value));
@@ -11,14 +14,46 @@ const isCurrentJobRunning = computed(() => currentJob.value?.status === 'running
 const progressStyle = computed(() => ({
   width: `${Math.min(Math.max(currentJob.value?.progress ?? 0, 0), 100)}%`,
 }));
+const visibleJobs = computed(() => offline.state.jobs.slice(0, visibleHistoryCount.value));
+const hasMoreJobs = computed(() => visibleHistoryCount.value < offline.state.jobs.length);
 
 onMounted(() => {
   void offline.load();
 });
 
+watch(
+  () => offline.state.jobs.length,
+  (length, previousLength) => {
+    if (length === 0) {
+      visibleHistoryCount.value = INITIAL_HISTORY_COUNT;
+      return;
+    }
+    if (length < previousLength) {
+      visibleHistoryCount.value = Math.max(
+        INITIAL_HISTORY_COUNT,
+        Math.min(visibleHistoryCount.value, length)
+      );
+    }
+  }
+);
+
 function handleFileChange(event: Event): void {
   const input = event.target as HTMLInputElement;
   offline.setSelectedFile(input.files?.[0] ?? null);
+}
+
+function loadMoreHistory(): void {
+  visibleHistoryCount.value = Math.min(
+    visibleHistoryCount.value + HISTORY_BATCH_SIZE,
+    offline.state.jobs.length
+  );
+}
+
+function handleHistoryScroll(event: Event): void {
+  const target = event.currentTarget as HTMLElement;
+  if (target.scrollTop + target.clientHeight >= target.scrollHeight - 24 && hasMoreJobs.value) {
+    loadMoreHistory();
+  }
 }
 
 function labelForStatus(job: OfflineJob | null): string {
@@ -104,8 +139,11 @@ function stageLabel(stage: string): string {
           <label v-if="offline.state.inputType === 'audio'" key="audio" class="drop-zone">
             <input type="file" accept=".wav,audio/wav,audio/x-wav" @change="handleFileChange" />
             <span>选择 WAV</span>
-            <strong>{{ offline.state.selectedFile?.name ?? '拖入或点击选择一段人声音频' }}</strong>
+            <strong>{{ offline.selectedAudioLabel.value }}</strong>
             <small>10 秒内直接识别；超过 10 秒会按 60 秒自动分块异步识别。</small>
+            <button class="drop-zone__picker" type="button" @click.prevent="offline.chooseAudioFile">
+              从本机选择音频
+            </button>
           </label>
 
           <label v-else key="text" class="text-input-block">
@@ -310,9 +348,9 @@ function stageLabel(stage: string): string {
           清理记录和音频
         </button>
       </div>
-      <TransitionGroup name="offline-list" tag="div" class="history-list">
+      <TransitionGroup name="offline-list" tag="div" class="history-list" @scroll="handleHistoryScroll">
         <div
-          v-for="job in offline.state.jobs"
+          v-for="job in visibleJobs"
           :key="job.jobId"
           class="history-row"
           :class="{ selected: job.jobId === currentJob?.jobId }"
@@ -348,6 +386,9 @@ function stageLabel(stage: string): string {
           </button>
         </div>
       </TransitionGroup>
+      <button v-if="hasMoreJobs" class="history-load-more" type="button" @click="loadMoreHistory">
+        下拉加载更多记录
+      </button>
       <p v-if="offline.state.jobs.length === 0" class="empty-history">暂无离线任务记录。</p>
     </section>
   </section>
@@ -355,7 +396,12 @@ function stageLabel(stage: string): string {
 
 <style scoped>
 .offline-page {
-  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 24px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   padding: clamp(28px, 4vw, 54px);
   background:
     radial-gradient(circle at 18% 16%, rgba(230, 251, 132, 0.35), transparent 26%),
@@ -434,7 +480,7 @@ function stageLabel(stage: string): string {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
   gap: 24px;
-  margin-top: 28px;
+  min-height: 0;
 }
 
 .offline-card {
@@ -488,6 +534,17 @@ function stageLabel(stage: string): string {
 
 .drop-zone input {
   display: none;
+}
+
+.drop-zone__picker {
+  width: fit-content;
+  margin-top: 6px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: #10202f;
+  color: #f7fbff;
+  cursor: pointer;
+  font-weight: 800;
 }
 
 .drop-zone span,
@@ -732,7 +789,10 @@ select {
 }
 
 .offline-history {
-  margin-top: 24px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 24px;
 }
 
@@ -761,7 +821,12 @@ select {
 .history-list {
   display: grid;
   gap: 10px;
+  min-height: 0;
   margin-top: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
 }
 
 .history-row {
@@ -822,6 +887,17 @@ select {
 .history-row.selected {
   background: #e6fb84;
   box-shadow: 0 16px 34px rgba(113, 128, 15, 0.18);
+}
+
+.history-load-more {
+  width: fit-content;
+  margin: 12px auto 0;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: rgba(16, 32, 47, 0.08);
+  color: #10202f;
+  cursor: pointer;
+  font-weight: 800;
 }
 
 .offline-list-enter-active,
