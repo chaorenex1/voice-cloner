@@ -10,9 +10,12 @@ use crate::{
         virtual_mic::VirtualMicAdapter,
     },
     domain::session::RealtimeSession,
-    services::realtime_stream_manager::{RealtimeStreamMode, RealtimeStreamSnapshot},
-    services::session_manager::{
-        CreateRealtimeSessionRequest, SwitchRealtimeVoiceRequest, UpdateRealtimeParamsRequest,
+    services::{
+        realtime_full_chain_tester::{
+            run_realtime_full_chain_test, RealtimeFullChainTestReport, RealtimeFullChainTestRequest,
+        },
+        realtime_stream_manager::{RealtimeStreamMode, RealtimeStreamSnapshot},
+        session_manager::{CreateRealtimeSessionRequest, SwitchRealtimeVoiceRequest, UpdateRealtimeParamsRequest},
     },
 };
 
@@ -154,13 +157,46 @@ pub fn start_realtime_file_input(
             "local audio file is empty",
         )));
     }
+    let settings = state.settings().load_or_default().map_err(ApiError::from)?;
+    if settings.device.virtual_mic_enabled {
+        let format = PcmFormat {
+            sample_rate: settings.runtime.default_sample_rate,
+            frame_ms: settings.runtime.audio_frame_ms,
+            sample_format: SampleFormat::I16,
+            ..PcmFormat::default()
+        };
+        state
+            .virtual_mic()
+            .set_target_device_id(settings.device.virtual_mic_device_id.clone());
+        state.virtual_mic().start(format).map_err(ApiError::from)?;
+    }
     state
         .realtime_streams()
         .start_file_input(&session_id, request.file_name, request.audio_bytes)
-        .map_err(ApiError::from)?;
+        .map_err(|error| {
+            let _ = state.virtual_mic().stop();
+            ApiError::from(error)
+        })?;
     state
         .realtime_streams()
         .get_snapshot(&session_id)
+        .map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn run_realtime_full_chain_simulation(
+    state: State<'_, AppState>,
+    request: RealtimeFullChainTestRequest,
+) -> ApiResult<RealtimeFullChainTestReport> {
+    tracing::debug!(
+        voice_name = %request.voice_name,
+        file_name = %request.file_name,
+        audio_bytes = request.audio_bytes.len(),
+        backend_base_url = ?request.backend_base_url,
+        "run realtime full-chain simulation requested"
+    );
+    run_realtime_full_chain_test(state.inner(), request)
+        .await
         .map_err(ApiError::from)
 }
 

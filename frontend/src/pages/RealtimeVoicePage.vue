@@ -82,6 +82,30 @@ const outputProofLabel = computed(() => {
   return '监听未开启';
 });
 
+const smoothnessLabel = computed(() => {
+  const snapshot = realtime.state.snapshot;
+  if (!snapshot) {
+    return '流畅 --';
+  }
+  const drops =
+    snapshot.outputGapSkips +
+    snapshot.outputLateDrops +
+    snapshot.outputOverflowDrops +
+    snapshot.outputDuplicateDrops;
+  const maxGap = snapshot.outputMaxFrameGapMs ?? 0;
+  const queueMs = snapshot.outputPlaybackQueueMs ?? 0;
+  if (drops > 0) {
+    return `流畅 异常${drops} / 队列${queueMs}ms`;
+  }
+  if (maxGap > 250) {
+    return `流畅 抖动${maxGap}ms / 队列${queueMs}ms`;
+  }
+  if (snapshot.outputPlayableFrames > 0) {
+    return `流畅 OK / 首包${snapshot.firstOutputLatencyMs ?? '--'}ms`;
+  }
+  return `流畅 等待 / 队列${queueMs}ms`;
+});
+
 const realtimeProofHint = computed(() => {
   const snapshot = realtime.state.snapshot;
   if (!snapshot || streamState.value !== 'running') {
@@ -89,6 +113,14 @@ const realtimeProofHint = computed(() => {
   }
   if (snapshot.backpressureHint) {
     return snapshot.backpressureHint;
+  }
+  const outputDrops =
+    snapshot.outputGapSkips +
+    snapshot.outputLateDrops +
+    snapshot.outputOverflowDrops +
+    snapshot.outputDuplicateDrops;
+  if (outputDrops > 0) {
+    return `输出播放发生 ${outputDrops} 次保序/背压修正：跳缺口 ${snapshot.outputGapSkips}，迟到丢弃 ${snapshot.outputLateDrops}，溢出丢弃 ${snapshot.outputOverflowDrops}，重复丢弃 ${snapshot.outputDuplicateDrops}。`;
   }
   if (snapshot.inputHealth) {
     return snapshot.inputHealth;
@@ -155,6 +187,34 @@ const micLabel = computed(() => {
   return realtime.isInputCapturing.value ? '关麦克风' : '麦克风';
 });
 
+const fullChainReportLabel = computed(() => {
+  const report = realtime.state.fullChainReport;
+  if (!report) {
+    return '选择 WAV 后可运行真实全链路压测';
+  }
+  const summary = report.summary;
+  const dropCount =
+    summary.outputGapSkips +
+    summary.outputLateDrops +
+    summary.outputOverflowDrops +
+    summary.outputDuplicateDrops;
+  return `压测 ${summary.verdict} / VAD ${summary.vadSpeechFrames} / 收 ${summary.outputReceivedFrames} / 播 ${summary.outputWrittenFrames} / 最大间隔 ${summary.outputMaxFrameGapMs ?? '--'}ms / 丢弃 ${dropCount}`;
+});
+
+const ledgerEntries = computed(() => (realtime.state.snapshot?.ledger ?? []).slice(-12).reverse());
+
+const ledgerSummaryLabel = computed(() => {
+  const snapshot = realtime.state.snapshot;
+  if (!snapshot) {
+    return '等待实时账本';
+  }
+  const asrRange =
+    snapshot.asrFirstFrameSeq && snapshot.asrLastFrameSeq
+      ? `${snapshot.asrFirstFrameSeq}-${snapshot.asrLastFrameSeq}`
+      : '--';
+  return `Rust ${snapshot.rustSentSeq ?? '--'} / Server ${snapshot.serverDequeuedSeq ?? '--'} / ASR ${asrRange} / TTS rev ${snapshot.revisionId ?? '--'} / ACK ${snapshot.audioChunkIndex ?? '--'}`;
+});
+
 function handleRealtimeFileChange(event: Event): void {
   const input = event.currentTarget as HTMLInputElement;
   realtime.setSelectedInputFile(input.files?.[0] ?? null);
@@ -195,6 +255,7 @@ onBeforeUnmount(() => {
         <span>{{ latencyLabel }}</span>
         <span>{{ frameProofLabel }}</span>
         <span>{{ outputProofLabel }}</span>
+        <span>{{ smoothnessLabel }}</span>
         <!-- <span>{{ realtime.state.snapshot?.audioMode ?? 'audio-mode --' }}</span> -->
       </div>
     </header>
@@ -261,7 +322,59 @@ onBeforeUnmount(() => {
             />
             <span>{{ realtime.state.selectedInputFile?.name ?? '选择 WAV 测试音频' }}</span>
           </label>
+          <button
+            v-if="realtime.state.inputSource === 'localFile'"
+            type="button"
+            :disabled="realtime.state.busy || !realtime.state.selectedInputFile || !realtime.state.selectedVoiceName"
+            @click="realtime.runFullChainSimulation"
+          >
+            全链路压测
+          </button>
         </div>
+
+        <div
+          v-if="realtime.state.inputSource === 'localFile'"
+          class="call-bubble call-bubble--system"
+          aria-live="polite"
+        >
+          {{ fullChainReportLabel }}
+          <template v-if="realtime.state.fullChainReport?.summary.reasons.length">
+            ：{{ realtime.state.fullChainReport.summary.reasons.join('；') }}
+          </template>
+        </div>
+
+        <section class="realtime-ledger-panel" aria-label="实时链路账本">
+          <header>
+            <div>
+              <p class="module-eyebrow">Realtime Ledger</p>
+              <strong>真实麦克风链路账本</strong>
+            </div>
+            <small>{{ ledgerSummaryLabel }}</small>
+          </header>
+          <div class="realtime-ledger-grid">
+            <article v-for="entry in ledgerEntries" :key="`${entry.timestampMs}-${entry.stage}-${entry.event}`">
+              <span>{{ entry.stage }}</span>
+              <strong>{{ entry.event }}</strong>
+              <small>
+                <template v-if="entry.rustSentSeq">Rust#{{ entry.rustSentSeq }} </template>
+                <template v-if="entry.serverDequeuedSeq">Srv#{{ entry.serverDequeuedSeq }} </template>
+                <template v-if="entry.asrFirstFrameSeq && entry.asrLastFrameSeq">
+                  ASR {{ entry.asrFirstFrameSeq }}-{{ entry.asrLastFrameSeq }}
+                </template>
+                <template v-if="entry.ttsRevisionId"> Rev#{{ entry.ttsRevisionId }}</template>
+                <template v-if="entry.audioChunkIndex"> Chunk#{{ entry.audioChunkIndex }}</template>
+                <template v-if="entry.playbackQueueMs !== null"> Queue {{ entry.playbackQueueMs }}ms</template>
+              </small>
+              <em v-if="entry.status || entry.asrCommitReason">
+                {{ entry.status ?? entry.asrCommitReason }}
+              </em>
+              <p v-if="entry.message">{{ entry.message }}</p>
+            </article>
+            <p v-if="ledgerEntries.length === 0" class="realtime-ledger-empty">
+              账本会在麦克风/本地音频开始后记录 chunk、VAD、ASR、TTS 和播放 ACK。
+            </p>
+          </div>
+        </section>
 
         <nav class="call-dock" aria-label="通话控制">
           <button

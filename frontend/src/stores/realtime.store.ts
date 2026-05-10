@@ -2,6 +2,7 @@ import { computed, reactive } from 'vue';
 import {
   createRealtimeSession,
   getRealtimeStreamSnapshot,
+  runRealtimeFullChainSimulation,
   startRealtimeInput,
   startRealtimeFileInput,
   startRealtimeMonitor,
@@ -22,6 +23,7 @@ import {
 } from '../utils/realtime-debug';
 import type {
   RealtimeSession,
+  RealtimeFullChainTestReport,
   RealtimeStreamSnapshot,
   RuntimeParams,
 } from '../utils/types/realtime';
@@ -43,6 +45,7 @@ export interface RealtimeState {
   params: RealtimeParamState;
   session: RealtimeSession | null;
   snapshot: RealtimeStreamSnapshot | null;
+  fullChainReport: RealtimeFullChainTestReport | null;
   loading: boolean;
   busy: boolean;
   lastMessage: string;
@@ -75,6 +78,7 @@ const state = reactive<RealtimeState>({
   },
   session: null,
   snapshot: null,
+  fullChainReport: null,
   loading: false,
   busy: false,
   lastMessage: '实时链路等待加载',
@@ -297,6 +301,58 @@ export function useRealtimeStore() {
     }
   }
 
+  async function runFullChainSimulation(): Promise<void> {
+    if (!state.selectedVoiceName) {
+      state.lastError = '请选择音色后再运行全链路压测';
+      return;
+    }
+    if (!state.selectedInputFile) {
+      state.lastError = '请选择 WAV 音频后再运行全链路压测';
+      return;
+    }
+    state.busy = true;
+    state.lastError = null;
+    state.fullChainReport = null;
+    state.lastMessage = '正在执行前端 -> Tauri -> FunSpeech -> 播放 ACK 全链路压测';
+    try {
+      const audioBytes = Array.from(new Uint8Array(await state.selectedInputFile.arrayBuffer()));
+      const report = await runRealtimeFullChainSimulation({
+        voiceName: state.selectedVoiceName,
+        fileName: state.selectedInputFile.name,
+        audioBytes,
+        runtimeParams: runtimeParams(),
+        backendBaseUrl: state.settings?.backend.realtime.baseUrl ?? null,
+        startMonitor: state.settings?.device.monitorEnabled ?? true,
+        pollIntervalMs: 500,
+        drainGraceMs: 6000,
+        maxDurationMs: 180000,
+      });
+      state.fullChainReport = report;
+      state.snapshot = report.timeline[report.timeline.length - 1]?.snapshot ?? state.snapshot;
+      state.lastMessage = `全链路压测完成：${report.summary.verdict}，收 ${report.summary.outputReceivedFrames} / 播 ${report.summary.outputWrittenFrames}`;
+      if (report.summary.verdict === 'fail') {
+        state.lastError = report.summary.reasons[0] ?? '全链路压测失败';
+      }
+      logRealtimeDebug('store:full-chain:success', {
+        verdict: report.summary.verdict,
+        reasons: report.summary.reasons,
+        sessionId: report.sessionId,
+        outputReceivedFrames: report.summary.outputReceivedFrames,
+        outputWrittenFrames: report.summary.outputWrittenFrames,
+        outputMaxFrameGapMs: report.summary.outputMaxFrameGapMs,
+      });
+    } catch (error) {
+      state.lastError = error instanceof Error ? error.message : String(error);
+      state.lastMessage = '全链路压测失败';
+      logRealtimeError('store:full-chain:error', error, {
+        selectedVoiceName: state.selectedVoiceName,
+        selectedInputFile: state.selectedInputFile.name,
+      });
+    } finally {
+      state.busy = false;
+    }
+  }
+
   function setInputSource(inputSource: 'microphone' | 'localFile'): void {
     state.inputSource = inputSource;
     state.lastMessage = inputSource === 'localFile' ? '已切换到本地音频模拟' : '已切换到麦克风输入';
@@ -442,6 +498,7 @@ export function useRealtimeStore() {
     start,
     stop,
     toggleInput,
+    runFullChainSimulation,
     setInputSource,
     setSelectedInputFile,
     toggleMonitor,

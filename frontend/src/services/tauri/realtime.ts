@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   CreateRealtimeSessionRequest,
+  RealtimeFullChainTestReport,
+  RealtimeFullChainTestRequest,
   RealtimeSession,
   RealtimeStreamSnapshot,
   StartRealtimeFileInputRequest,
@@ -25,7 +27,7 @@ async function invokeRealtime<T>(
   const startedAt = performance.now();
   const tauriRuntime = isTauriRuntime();
   const runtime = tauriRuntime ? 'tauri' : 'mock';
-  logRealtimeDebug(`ipc:${command}:start`, { runtime, args });
+  logRealtimeDebug(`ipc:${command}:start`, { runtime, args: summarizeRealtimeArgs(args) });
 
   if (!tauriRuntime) {
     const response = fallback();
@@ -46,7 +48,7 @@ async function invokeRealtime<T>(
   } catch (error) {
     logRealtimeError(`ipc:${command}:error`, error, {
       durationMs: Math.round(performance.now() - startedAt),
-      args,
+      args: summarizeRealtimeArgs(args),
     });
     throw error;
   }
@@ -59,7 +61,30 @@ function summarizeRealtimeResponse(response: unknown): unknown {
   if (isRealtimeSnapshot(response)) {
     return summarizeRealtimeSnapshot(response);
   }
+  if (isRealtimeFullChainReport(response)) {
+    return {
+      sessionId: response.sessionId,
+      verdict: response.summary.verdict,
+      reasons: response.summary.reasons,
+      samples: response.timeline.length,
+      outputReceivedFrames: response.summary.outputReceivedFrames,
+      outputWrittenFrames: response.summary.outputWrittenFrames,
+      outputMaxFrameGapMs: response.summary.outputMaxFrameGapMs,
+      playbackOutputMode: response.playbackOutputMode,
+    };
+  }
   return response;
+}
+
+function summarizeRealtimeArgs(args: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(
+    JSON.stringify(args, (key, value) => {
+      if (key === 'audioBytes' && Array.isArray(value)) {
+        return { byteCount: value.length };
+      }
+      return value;
+    })
+  ) as Record<string, unknown>;
 }
 
 function isRealtimeSession(value: unknown): value is RealtimeSession {
@@ -79,6 +104,16 @@ function isRealtimeSnapshot(value: unknown): value is RealtimeStreamSnapshot {
     'sessionId' in value &&
     'websocketState' in value &&
     'sentFrames' in value
+  );
+}
+
+function isRealtimeFullChainReport(value: unknown): value is RealtimeFullChainTestReport {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'summary' in value &&
+    'timeline' in value &&
+    'playbackOutputMode' in value
   );
 }
 
@@ -120,6 +155,48 @@ function mockSnapshot(session: RealtimeSession): RealtimeStreamSnapshot {
     outputReceivedFrames: session.status === 'running' ? 42 : 0,
     outputWrittenFrames: 0,
     outputAckMismatches: 0,
+    outputPlaybackQueueMs: 0,
+    outputLastFrameGapMs: session.status === 'running' ? 20 : null,
+    outputMaxFrameGapMs: session.status === 'running' ? 28 : null,
+    outputGapSkips: 0,
+    outputLateDrops: 0,
+    outputOverflowDrops: 0,
+    outputDuplicateDrops: 0,
+    outputPlayableFrames: session.status === 'running' ? 42 : 0,
+    firstOutputLatencyMs: session.status === 'running' ? 1200 : null,
+    lastOutputAtMs: null,
+    rustSentSeq: session.status === 'running' ? 42 : null,
+    serverDequeuedSeq: session.status === 'running' ? 42 : null,
+    asrCommittedSegments: session.status === 'running' ? 2 : 0,
+    asrCommittedAudioMs: session.status === 'running' ? 1600 : 0,
+    asrSegmentId: session.status === 'running' ? 'utt_1_seg_2' : null,
+    asrFirstFrameSeq: session.status === 'running' ? 41 : null,
+    asrLastFrameSeq: session.status === 'running' ? 80 : null,
+    asrCommitReason: session.status === 'running' ? 'partial' : null,
+    asrQueueMs: session.status === 'running' ? 0 : null,
+    ledger: session.status === 'running'
+      ? [
+          {
+            timestampMs: Date.now(),
+            stage: 'asr_segment',
+            event: 'asr.segment_committed',
+            status: 'partial',
+            message: 'duration=800ms frames=40',
+            inputFrameSeq: null,
+            rustSentSeq: null,
+            serverDequeuedSeq: null,
+            asrSegmentId: 'utt_1_seg_2',
+            asrFirstFrameSeq: 41,
+            asrLastFrameSeq: 80,
+            asrCommitReason: 'partial',
+            asrQueueMs: 0,
+            ttsRevisionId: null,
+            ttsJobId: null,
+            audioChunkIndex: null,
+            playbackQueueMs: null,
+          },
+        ]
+      : [],
     vadSpeechFrames: session.status === 'running' ? 21 : 0,
     vadUtterancesEnded: 0,
     ttsAudioChunks: session.status === 'running' ? 42 : 0,
@@ -139,6 +216,17 @@ function mockSnapshot(session: RealtimeSession): RealtimeStreamSnapshot {
     ttsJobId: null,
     audioChunkIndex: null,
     configVersion: null,
+    serverRealtimeConfig: null,
+    asrCommittedText: null,
+    asrCommittedChars: 0,
+    ttsQueuedJobs: 0,
+    ttsStartedJobs: 0,
+    ttsCompletedJobs: 0,
+    ttsDroppedJobs: 0,
+    ttsQueuedChars: 0,
+    ttsStartedChars: 0,
+    ttsCompletedChars: 0,
+    ttsDroppedChars: 0,
     backpressureHint: null,
     lastError: null,
   };
@@ -267,4 +355,69 @@ export async function getRealtimeStreamSnapshot(
   return invokeRealtime('get_realtime_stream_snapshot', { sessionId: session.sessionId }, () =>
     mockSnapshot(session)
   );
+}
+
+export async function runRealtimeFullChainSimulation(
+  request: RealtimeFullChainTestRequest
+): Promise<RealtimeFullChainTestReport> {
+  return invokeRealtime('run_realtime_full_chain_simulation', { request }, () => {
+    const session = mockSession({
+      voiceName: request.voiceName,
+      runtimeParams: request.runtimeParams ?? { values: {} },
+    });
+    const running = { ...session, status: 'running' as const };
+    const snapshot = {
+      ...mockSnapshot(running),
+      inputSource: 'local_file',
+      outputWrittenFrames: 42,
+      monitorFrames: request.startMonitor === false ? 0 : 42,
+    };
+    return {
+      sessionId: session.sessionId,
+      traceId: session.traceId,
+      voiceName: request.voiceName,
+      websocketUrl: session.websocketUrl,
+      fileName: request.fileName,
+      audioBytes: request.audioBytes.length,
+      sampleRate: 48000,
+      frameMs: 20,
+      playbackOutputMode: request.startMonitor === false ? 'buffer_only' : 'monitor',
+      monitorStartError: null,
+      timeline: [{ elapsedMs: 1000, snapshot }],
+      summary: {
+        verdict: request.startMonitor === false ? 'degraded' : 'pass',
+        reasons: request.startMonitor === false ? ['浏览器预览未打开监听输出'] : [],
+        durationMs: 1000,
+        sentFrames: snapshot.sentFrames,
+        receivedFrames: snapshot.receivedFrames,
+        outputReceivedFrames: snapshot.outputReceivedFrames,
+        outputPlayableFrames: snapshot.outputPlayableFrames,
+        outputWrittenFrames: snapshot.outputWrittenFrames,
+        monitorFrames: snapshot.monitorFrames,
+        virtualMicFrames: snapshot.virtualMicFrames,
+        outputAckMismatches: snapshot.outputAckMismatches,
+        outputGapSkips: snapshot.outputGapSkips,
+        outputLateDrops: snapshot.outputLateDrops,
+        outputOverflowDrops: snapshot.outputOverflowDrops,
+        outputDuplicateDrops: snapshot.outputDuplicateDrops,
+        firstOutputLatencyMs: snapshot.firstOutputLatencyMs,
+        outputMaxFrameGapMs: snapshot.outputMaxFrameGapMs,
+        maxPlaybackQueueMs: snapshot.outputPlaybackQueueMs,
+        vadSpeechFrames: snapshot.vadSpeechFrames,
+        vadUtterancesEnded: snapshot.vadUtterancesEnded,
+        ttsAudioChunks: snapshot.ttsAudioChunks,
+        asrCommittedChars: snapshot.asrCommittedChars,
+        ttsQueuedJobs: snapshot.ttsQueuedJobs,
+        ttsStartedJobs: snapshot.ttsStartedJobs,
+        ttsCompletedJobs: snapshot.ttsCompletedJobs,
+        ttsDroppedJobs: snapshot.ttsDroppedJobs,
+        ttsQueuedChars: snapshot.ttsQueuedChars,
+        ttsStartedChars: snapshot.ttsStartedChars,
+        ttsCompletedChars: snapshot.ttsCompletedChars,
+        ttsDroppedChars: snapshot.ttsDroppedChars,
+        lastEvent: snapshot.lastEvent,
+        lastError: snapshot.lastError,
+      },
+    };
+  });
 }

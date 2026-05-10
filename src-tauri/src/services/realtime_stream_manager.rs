@@ -25,6 +25,56 @@ use crate::{
 };
 
 const FUNSPEECH_REALTIME_SAMPLE_RATE: u32 = 16_000;
+const PLAYBACK_GAP_SKIP_PENDING: usize = 10;
+const PLAYBACK_MAX_PENDING: usize = 600;
+const PLAYBACK_JITTER_PREBUFFER_MS: usize = 0;
+const REALTIME_LEDGER_LIMIT: usize = 80;
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealtimeLedgerEntry {
+    pub timestamp_ms: i64,
+    pub stage: String,
+    pub event: String,
+    pub status: Option<String>,
+    pub message: Option<String>,
+    pub input_frame_seq: Option<u64>,
+    pub rust_sent_seq: Option<u64>,
+    pub server_dequeued_seq: Option<u64>,
+    pub asr_segment_id: Option<String>,
+    pub asr_first_frame_seq: Option<u64>,
+    pub asr_last_frame_seq: Option<u64>,
+    pub asr_commit_reason: Option<String>,
+    pub asr_queue_ms: Option<u64>,
+    pub tts_revision_id: Option<u64>,
+    pub tts_job_id: Option<String>,
+    pub audio_chunk_index: Option<u64>,
+    pub playback_queue_ms: Option<u64>,
+}
+
+impl RealtimeLedgerEntry {
+    fn new(stage: impl Into<String>, event: impl Into<String>) -> Self {
+        Self {
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            stage: stage.into(),
+            event: event.into(),
+            status: None,
+            message: None,
+            input_frame_seq: None,
+            rust_sent_seq: None,
+            server_dequeued_seq: None,
+            asr_segment_id: None,
+            asr_first_frame_seq: None,
+            asr_last_frame_seq: None,
+            asr_commit_reason: None,
+            asr_queue_ms: None,
+            tts_revision_id: None,
+            tts_job_id: None,
+            audio_chunk_index: None,
+            playback_queue_ms: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +100,26 @@ pub struct RealtimeStreamSnapshot {
     pub output_received_frames: u64,
     pub output_written_frames: u64,
     pub output_ack_mismatches: u64,
+    pub output_playback_queue_ms: u64,
+    pub output_last_frame_gap_ms: Option<u64>,
+    pub output_max_frame_gap_ms: Option<u64>,
+    pub output_gap_skips: u64,
+    pub output_late_drops: u64,
+    pub output_overflow_drops: u64,
+    pub output_duplicate_drops: u64,
+    pub output_playable_frames: u64,
+    pub first_output_latency_ms: Option<u64>,
+    pub last_output_at_ms: Option<i64>,
+    pub rust_sent_seq: Option<u64>,
+    pub server_dequeued_seq: Option<u64>,
+    pub asr_committed_segments: u64,
+    pub asr_committed_audio_ms: u64,
+    pub asr_segment_id: Option<String>,
+    pub asr_first_frame_seq: Option<u64>,
+    pub asr_last_frame_seq: Option<u64>,
+    pub asr_commit_reason: Option<String>,
+    pub asr_queue_ms: Option<u64>,
+    pub ledger: Vec<RealtimeLedgerEntry>,
     pub vad_speech_frames: u64,
     pub vad_utterances_ended: u64,
     pub tts_audio_chunks: u64,
@@ -69,12 +139,23 @@ pub struct RealtimeStreamSnapshot {
     pub tts_job_id: Option<String>,
     pub audio_chunk_index: Option<u64>,
     pub config_version: Option<u64>,
+    pub server_realtime_config: Option<Value>,
+    pub asr_committed_text: Option<String>,
+    pub asr_committed_chars: u64,
+    pub tts_queued_jobs: u64,
+    pub tts_started_jobs: u64,
+    pub tts_completed_jobs: u64,
+    pub tts_dropped_jobs: u64,
+    pub tts_queued_chars: u64,
+    pub tts_started_chars: u64,
+    pub tts_completed_chars: u64,
+    pub tts_dropped_chars: u64,
     pub backpressure_hint: Option<String>,
     pub last_error: Option<String>,
 }
 
 impl RealtimeStreamSnapshot {
-    fn pending(session: &RealtimeSession) -> Self {
+    pub(crate) fn pending(session: &RealtimeSession) -> Self {
         Self {
             session_id: session.session_id.clone(),
             websocket_url: session.websocket_url.clone(),
@@ -97,6 +178,26 @@ impl RealtimeStreamSnapshot {
             output_received_frames: 0,
             output_written_frames: 0,
             output_ack_mismatches: 0,
+            output_playback_queue_ms: 0,
+            output_last_frame_gap_ms: None,
+            output_max_frame_gap_ms: None,
+            output_gap_skips: 0,
+            output_late_drops: 0,
+            output_overflow_drops: 0,
+            output_duplicate_drops: 0,
+            output_playable_frames: 0,
+            first_output_latency_ms: None,
+            last_output_at_ms: None,
+            rust_sent_seq: None,
+            server_dequeued_seq: None,
+            asr_committed_segments: 0,
+            asr_committed_audio_ms: 0,
+            asr_segment_id: None,
+            asr_first_frame_seq: None,
+            asr_last_frame_seq: None,
+            asr_commit_reason: None,
+            asr_queue_ms: None,
+            ledger: Vec::new(),
             vad_speech_frames: 0,
             vad_utterances_ended: 0,
             tts_audio_chunks: 0,
@@ -116,6 +217,17 @@ impl RealtimeStreamSnapshot {
             tts_job_id: None,
             audio_chunk_index: None,
             config_version: None,
+            server_realtime_config: None,
+            asr_committed_text: None,
+            asr_committed_chars: 0,
+            tts_queued_jobs: 0,
+            tts_started_jobs: 0,
+            tts_completed_jobs: 0,
+            tts_dropped_jobs: 0,
+            tts_queued_chars: 0,
+            tts_started_chars: 0,
+            tts_completed_chars: 0,
+            tts_dropped_chars: 0,
             backpressure_hint: None,
             last_error: None,
         }
@@ -524,11 +636,38 @@ async fn run_realtime_voice_stream(
         let mut sequence = 0_u64;
         let mut pending_sends = VecDeque::<Instant>::new();
         let mut pending_output_chunks = VecDeque::<PendingOutputChunk>::new();
-        let mut pending_audio_acks = Vec::<Value>::new();
-        let mut last_audio_ack_sent_at = Instant::now();
+        let mut pending_client_events = Vec::<Value>::new();
+        let mut playback_buffer =
+            OrderedPlaybackBuffer::new(
+                PLAYBACK_GAP_SKIP_PENDING,
+                PLAYBACK_MAX_PENDING,
+                PLAYBACK_JITTER_PREBUFFER_MS,
+            );
+        let mut output_timeline_started_at = Instant::now();
+        let mut last_playable_output_at: Option<Instant> = None;
+        let mut playback_tick = tokio::time::interval(Duration::from_millis(format.frame_ms.max(1) as u64));
+        playback_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
+                _ = playback_tick.tick() => {
+                    let played = drain_one_playback_frame(
+                        &mut playback_buffer,
+                        format,
+                        funspeech_format,
+                        &frame_samples,
+                        monitor_output.as_ref(),
+                        &virtual_mic,
+                        write_virtual_mic,
+                        &snapshot,
+                        &mut last_playable_output_at,
+                        output_timeline_started_at,
+                        &mut pending_client_events,
+                    );
+                    if played && !pending_client_events.is_empty() {
+                        flush_client_events(&mut write, &mut pending_client_events).await?;
+                    }
+                }
                 Some(chunk) = audio_rx.recv() => {
                     write.send(Message::Binary(chunk.bytes.clone())).await.map_err(websocket_error)?;
                     sequence += 1;
@@ -536,8 +675,14 @@ async fn run_realtime_voice_stream(
                     patch_snapshot(&snapshot, |state| {
                         state.sent_frames += 1;
                         state.sent_bytes += chunk.bytes.len() as u64;
+                        state.rust_sent_seq = Some(sequence);
                         state.input_level = chunk.level;
                         state.pipeline_stage = "realtime_voice_sending_audio".into();
+                        push_ledger(state, "rust_send", "audio_frame_sent", |entry| {
+                            entry.rust_sent_seq = Some(sequence);
+                            entry.status = Some("sent".into());
+                            entry.message = Some(format!("bytes={} rms={:.4}", chunk.bytes.len(), chunk.level.rms));
+                        });
                     });
                     if sequence % 50 == 0 {
                         tracing::debug!(
@@ -558,7 +703,10 @@ async fn run_realtime_voice_stream(
                                 match spawn_input_thread(device, audio_tx.clone(), funspeech_format) {
                                     Ok(stop) => {
                                         input_stop = Some(stop);
+                                        output_timeline_started_at = Instant::now();
+                                        last_playable_output_at = None;
                                         patch_snapshot(&snapshot, |state| {
+                                            reset_output_flow_metrics(state);
                                             state.input_state = "capturing".into();
                                             state.input_source = "microphone".into();
                                             state.input_health = Some("麦克风正在采集".into());
@@ -587,7 +735,10 @@ async fn run_realtime_voice_stream(
                                 ) {
                                     Ok(task) => {
                                         file_input_task = Some(task);
+                                        output_timeline_started_at = Instant::now();
+                                        last_playable_output_at = None;
                                         patch_snapshot(&snapshot, |state| {
+                                            reset_output_flow_metrics(state);
                                             state.input_state = "capturing".into();
                                             state.input_source = "local_file".into();
                                             state.input_health = Some(format!("正在模拟播放本地音频: {file_name}"));
@@ -724,99 +875,88 @@ async fn run_realtime_voice_stream(
                             let latency_ms = pending_sends
                                 .pop_front()
                                 .map(|sent_at| sent_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
-                            let samples = pcm_i16_bytes_to_f32(&bytes, funspeech_format.samples_per_frame())
-                                .map(|samples| {
-                                    resample_samples_linear(
-                                        &samples,
-                                        funspeech_format.sample_rate,
-                                        format.sample_rate,
-                                    )
-                                })
-                                .unwrap_or_else(|| frame_samples.clone());
-                            let frame = AudioFrame {
-                                sequence,
-                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                                format,
-                                samples,
-                            };
-                            let virtual_mic_result = if write_virtual_mic {
-                                virtual_mic.write_frame(&frame)
-                            } else {
-                                Ok(())
-                            };
-                            let monitor_written = monitor_output
-                                .as_ref()
-                                .map(|output| output.push_frame(&frame))
-                                .unwrap_or(false);
-                            let output_written =
-                                monitor_written || (write_virtual_mic && virtual_mic_result.is_ok());
+                            let bytes_len = bytes.len();
                             patch_snapshot(&snapshot, |state| {
                                 state.received_frames += 1;
-                                state.received_bytes += bytes.len() as u64;
-                                state.converted_frames += 1;
+                                state.received_bytes += bytes_len as u64;
                                 state.output_received_frames += 1;
-                                state.latency_ms = latency_ms;
-                                state.pipeline_stage = "realtime_voice_received_audio".into();
-                                state.last_prompt = Some("正在输出转换后语音".into());
-                                if output_written {
-                                    state.output_written_frames += 1;
-                                }
-                                if let Some(metadata) = &output_metadata {
-                                    state.tts_job_id = metadata.tts_job_id.clone();
-                                    state.audio_chunk_index = metadata.audio_chunk_index;
-                                    if metadata.expected_bytes.is_some_and(|expected| expected != bytes.len() as u64) {
-                                        state.output_ack_mismatches += 1;
-                                    }
-                                } else {
-                                    state.output_ack_mismatches += 1;
-                                }
-                                if monitor_written {
-                                    state.monitor_frames += 1;
-                                }
-                                if write_virtual_mic && virtual_mic_result.is_ok() {
-                                    state.virtual_mic_frames += 1;
-                                } else if let Err(error) = &virtual_mic_result {
-                                    state.last_error = Some(error.to_string());
-                                }
+                                state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
+                                state.pipeline_stage = "realtime_voice_buffering_audio".into();
+                                push_ledger(state, "output_receive", "audio_binary_received", |entry| {
+                                    entry.audio_chunk_index = output_metadata.as_ref().and_then(|metadata| metadata.audio_chunk_index);
+                                    entry.tts_job_id = output_metadata.as_ref().and_then(|metadata| metadata.tts_job_id.clone());
+                                    entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+                                    entry.status = Some("received".into());
+                                    entry.message = Some(format!("bytes={bytes_len}"));
+                                });
                             });
-                            if sequence % 50 == 0 {
-                                tracing::debug!(
-                                    session_id = %session.session_id,
-                                    trace_id = %session.trace_id,
-                                    received_for_sequence = sequence,
-                                    response_bytes = bytes.len(),
-                                    latency_ms = ?latency_ms,
-                                    write_virtual_mic,
-                                    virtual_mic_ok = virtual_mic_result.is_ok(),
-                                    "realtime audio frame received"
-                                );
-                            }
                             if let Some(metadata) = output_metadata {
-                                pending_audio_acks.push(json!({
-                                    "tts_job_id": metadata.tts_job_id,
-                                    "audio_chunk_index": metadata.audio_chunk_index,
-                                    "received": true,
-                                    "written_to_virtual_mic": write_virtual_mic && virtual_mic_result.is_ok(),
-                                    "monitor_written": monitor_written,
-                                    "client_ts_ms": chrono::Utc::now().timestamp_millis(),
-                                }));
-                                if pending_audio_acks.len() >= 10
-                                    || last_audio_ack_sent_at.elapsed() >= Duration::from_millis(200)
-                                {
-                                    let last_ack = pending_audio_acks.last().cloned();
-                                    let count = pending_audio_acks.len();
-                                    let ack = json!({
-                                        "event": "client.audio_ack",
-                                        "payload": {
-                                            "count": count,
-                                            "acks": std::mem::take(&mut pending_audio_acks),
-                                            "last": last_ack,
-                                            "client_ts_ms": chrono::Utc::now().timestamp_millis(),
-                                        }
-                                    });
-                                    write.send(Message::Text(ack.to_string())).await.map_err(websocket_error)?;
-                                    last_audio_ack_sent_at = Instant::now();
+                                if metadata.expected_bytes.is_some_and(|expected| expected != bytes_len as u64) {
+                                    patch_snapshot(&snapshot, |state| state.output_ack_mismatches += 1);
                                 }
+                                if let Err(drop) = playback_buffer.enqueue(metadata, bytes, latency_ms) {
+                                    patch_snapshot(&snapshot, |state| {
+                                        apply_output_drop_status(state, drop.status);
+                                        state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
+                                        push_ledger(state, "playback", "audio_chunk_dropped", |entry| {
+                                            entry.tts_job_id = drop.tts_job_id.clone();
+                                            entry.audio_chunk_index = Some(drop.audio_chunk_index);
+                                            entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+                                            entry.status = Some(drop.status.into());
+                                        });
+                                    });
+                                    if let Some(event) = client_audio_played_event(
+                                        drop.chunk_id.clone(),
+                                        drop.tts_job_id.clone(),
+                                        drop.audio_chunk_index,
+                                        drop.status,
+                                        playback_buffer.queued_ms(format),
+                                    ) {
+                                        pending_client_events.push(event);
+                                    }
+                                    pending_client_events.push(client_audio_backpressure_event(
+                                        "drop",
+                                        playback_buffer.queued_ms(format),
+                                        drop.status,
+                                    ));
+                                }
+                            } else {
+                                patch_snapshot(&snapshot, |state| state.output_ack_mismatches += 1);
+                            }
+                            patch_snapshot(&snapshot, |state| {
+                                state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
+                            });
+
+                            for drop in playback_buffer.apply_pressure() {
+                                patch_snapshot(&snapshot, |state| {
+                                    apply_output_drop_status(state, drop.status);
+                                    state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
+                                    state.backpressure_hint = Some("播放队列压力过高，已跳到最新连续音频窗口".into());
+                                    push_ledger(state, "playback", "audio_chunk_dropped", |entry| {
+                                        entry.tts_job_id = drop.tts_job_id.clone();
+                                        entry.audio_chunk_index = Some(drop.audio_chunk_index);
+                                        entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+                                        entry.status = Some(drop.status.into());
+                                    });
+                                });
+                                if let Some(event) = client_audio_played_event(
+                                    drop.chunk_id.clone(),
+                                    drop.tts_job_id.clone(),
+                                    drop.audio_chunk_index,
+                                    drop.status,
+                                    playback_buffer.queued_ms(format),
+                                ) {
+                                    pending_client_events.push(event);
+                                }
+                                pending_client_events.push(client_audio_backpressure_event(
+                                    "drop",
+                                    playback_buffer.queued_ms(format),
+                                    drop.status,
+                                ));
+                            }
+
+                            if !pending_client_events.is_empty() {
+                                flush_client_events(&mut write, &mut pending_client_events).await?;
                             }
                         }
                         Some(Ok(Message::Text(text))) => {
@@ -824,27 +964,16 @@ async fn run_realtime_voice_stream(
                                 Ok(value) => {
                                     if matches!(event_name(&value), Some("tts.audio_chunk")) {
                                         pending_output_chunks.push_back(PendingOutputChunk {
+                                            chunk_id: payload_string(&value, "chunk_id"),
                                             tts_job_id: payload_string(&value, "tts_job_id"),
                                             audio_chunk_index: payload_u64(&value, "audio_chunk_index"),
                                             expected_bytes: payload_u64(&value, "bytes"),
                                         });
                                     }
                                     if matches!(event_name(&value), Some("tts.job_completed" | "tts_completed"))
-                                        && !pending_audio_acks.is_empty()
+                                        && !pending_client_events.is_empty()
                                     {
-                                        let last_ack = pending_audio_acks.last().cloned();
-                                        let count = pending_audio_acks.len();
-                                        let ack = json!({
-                                            "event": "client.audio_ack",
-                                            "payload": {
-                                                "count": count,
-                                                "acks": std::mem::take(&mut pending_audio_acks),
-                                                "last": last_ack,
-                                                "client_ts_ms": chrono::Utc::now().timestamp_millis(),
-                                            }
-                                        });
-                                        write.send(Message::Text(ack.to_string())).await.map_err(websocket_error)?;
-                                        last_audio_ack_sent_at = Instant::now();
+                                        flush_client_events(&mut write, &mut pending_client_events).await?;
                                     }
                                     tracing::debug!(
                                         session_id = %session.session_id,
@@ -1373,6 +1502,20 @@ fn payload_bool(value: &Value, key: &str) -> Option<bool> {
         .or_else(|| value.get(key).and_then(Value::as_bool))
 }
 
+fn payload_value(value: &Value, key: &str) -> Option<Value> {
+    value
+        .get("payload")
+        .and_then(|payload| payload.get(key))
+        .or_else(|| value.get(key))
+        .cloned()
+}
+
+fn payload_text_chars(value: &Value, key: &str) -> u64 {
+    payload_u64(value, "text_chars")
+        .or_else(|| payload_string(value, key).map(|text| text.chars().count() as u64))
+        .unwrap_or(0)
+}
+
 fn protocol_event_name(value: &Value) -> Option<String> {
     payload_string(value, "protocol_event")
 }
@@ -1414,8 +1557,288 @@ struct RealtimeAudioChunk {
 #[derive(Debug, Clone)]
 struct PendingOutputChunk {
     tts_job_id: Option<String>,
+    chunk_id: Option<String>,
     audio_chunk_index: Option<u64>,
     expected_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+struct PendingPlaybackFrame {
+    metadata: PendingOutputChunk,
+    bytes: Vec<u8>,
+    latency_ms: Option<u64>,
+}
+
+#[derive(Debug, PartialEq)]
+struct PlaybackDrop {
+    tts_job_id: Option<String>,
+    chunk_id: Option<String>,
+    audio_chunk_index: u64,
+    status: &'static str,
+}
+
+#[derive(Debug)]
+struct OrderedPlaybackBuffer {
+    expected_next_index: Option<u64>,
+    pending: BTreeMap<u64, PendingPlaybackFrame>,
+    gap_skip_pending: usize,
+    max_pending: usize,
+    prebuffer_ms: usize,
+    playback_started: bool,
+}
+
+impl OrderedPlaybackBuffer {
+    fn new(gap_skip_pending: usize, max_pending: usize, prebuffer_ms: usize) -> Self {
+        Self {
+            expected_next_index: None,
+            pending: BTreeMap::new(),
+            gap_skip_pending,
+            max_pending: max_pending.max(1),
+            prebuffer_ms,
+            playback_started: prebuffer_ms == 0,
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        metadata: PendingOutputChunk,
+        bytes: Vec<u8>,
+        latency_ms: Option<u64>,
+    ) -> Result<u64, PlaybackDrop> {
+        let index = metadata.audio_chunk_index.unwrap_or_else(|| {
+            self.expected_next_index
+                .unwrap_or(1)
+                .saturating_add(self.pending.len() as u64)
+        });
+        if self.expected_next_index.is_none() {
+            self.expected_next_index = Some(index);
+        }
+        if self.expected_next_index.is_some_and(|expected| index < expected) {
+            return Err(PlaybackDrop {
+                tts_job_id: metadata.tts_job_id,
+                chunk_id: metadata.chunk_id,
+                audio_chunk_index: index,
+                status: "late_drop",
+            });
+        }
+        if self.pending.contains_key(&index) {
+            return Err(PlaybackDrop {
+                tts_job_id: metadata.tts_job_id,
+                chunk_id: metadata.chunk_id,
+                audio_chunk_index: index,
+                status: "duplicate_drop",
+            });
+        }
+        self.pending.insert(
+            index,
+            PendingPlaybackFrame {
+                metadata,
+                bytes,
+                latency_ms,
+            },
+        );
+        Ok(index)
+    }
+
+    fn apply_pressure(&mut self) -> Vec<PlaybackDrop> {
+        let mut drops = Vec::new();
+        if self.pending.len() >= self.gap_skip_pending {
+            if let (Some(expected), Some(first_pending)) =
+                (self.expected_next_index, self.pending.keys().next().copied())
+            {
+                if first_pending > expected && !self.pending.contains_key(&expected) {
+                    self.expected_next_index = Some(first_pending);
+                    drops.push(PlaybackDrop {
+                        tts_job_id: None,
+                        chunk_id: None,
+                        audio_chunk_index: expected,
+                        status: "gap_skip",
+                    });
+                }
+            }
+        }
+
+        while self.pending.len() > self.max_pending {
+            let Some(index) = self.pending.keys().next().copied() else {
+                break;
+            };
+            let Some(frame) = self.pending.remove(&index) else {
+                break;
+            };
+            if self.expected_next_index.is_some_and(|expected| expected <= index) {
+                self.expected_next_index = Some(index.saturating_add(1));
+            }
+            drops.push(PlaybackDrop {
+                tts_job_id: frame.metadata.tts_job_id,
+                chunk_id: frame.metadata.chunk_id,
+                audio_chunk_index: index,
+                status: "playback_overflow_drop",
+            });
+        }
+        drops
+    }
+
+    fn pop_playable(&mut self, format: PcmFormat) -> Option<(u64, PendingPlaybackFrame)> {
+        if self.expected_next_index.is_none() {
+            self.expected_next_index = self.pending.keys().next().copied();
+        }
+        if !self.playback_started {
+            if self.queued_ms(format) < self.prebuffer_ms && self.pending.len() < self.max_pending {
+                return None;
+            }
+            self.playback_started = true;
+        }
+        let expected = self.expected_next_index?;
+        let frame = self.pending.remove(&expected)?;
+        self.expected_next_index = Some(expected.saturating_add(1));
+        Some((expected, frame))
+    }
+
+    fn queued_ms(&self, format: PcmFormat) -> usize {
+        self.pending.len() * format.frame_ms as usize
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drain_one_playback_frame(
+    playback_buffer: &mut OrderedPlaybackBuffer,
+    format: PcmFormat,
+    funspeech_format: PcmFormat,
+    frame_samples: &[f32],
+    monitor_output: Option<&RealtimeMonitorPlayer>,
+    virtual_mic: &Arc<SelectableVirtualMicAdapter>,
+    write_virtual_mic: bool,
+    snapshot: &Arc<RwLock<RealtimeStreamSnapshot>>,
+    last_playable_output_at: &mut Option<Instant>,
+    output_timeline_started_at: Instant,
+    pending_client_events: &mut Vec<Value>,
+) -> bool {
+    let Some((expected, playback_frame)) = playback_buffer.pop_playable(format) else {
+        return false;
+    };
+    let PendingPlaybackFrame {
+        metadata,
+        bytes,
+        latency_ms: played_latency_ms,
+    } = playback_frame;
+    let played_at = Instant::now();
+    let frame_gap_ms =
+        last_playable_output_at.map(|last| played_at.duration_since(last).as_millis().min(u64::MAX as u128) as u64);
+    *last_playable_output_at = Some(played_at);
+    let samples = pcm_i16_bytes_to_f32(&bytes, funspeech_format.samples_per_frame())
+        .map(|samples| resample_samples_linear(&samples, funspeech_format.sample_rate, format.sample_rate))
+        .unwrap_or_else(|| frame_samples.to_vec());
+    let frame = AudioFrame {
+        sequence: expected,
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        format,
+        samples,
+    };
+    let virtual_mic_result = if write_virtual_mic {
+        virtual_mic.write_frame(&frame)
+    } else {
+        Ok(())
+    };
+    let monitor_written = monitor_output.map(|output| output.push_frame(&frame)).unwrap_or(false);
+    let output_written = monitor_written || (write_virtual_mic && virtual_mic_result.is_ok());
+    patch_snapshot(snapshot, |state| {
+        state.converted_frames += 1;
+        state.output_playable_frames += 1;
+        state.output_playback_queue_ms = playback_buffer.queued_ms(format) as u64;
+        state.output_last_frame_gap_ms = frame_gap_ms;
+        if let Some(gap_ms) = frame_gap_ms {
+            state.output_max_frame_gap_ms = Some(state.output_max_frame_gap_ms.unwrap_or(0).max(gap_ms));
+        }
+        if state.first_output_latency_ms.is_none() {
+            state.first_output_latency_ms =
+                Some(output_timeline_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        }
+        state.last_output_at_ms = Some(chrono::Utc::now().timestamp_millis());
+        state.latency_ms = played_latency_ms;
+        state.pipeline_stage = "realtime_voice_received_audio".into();
+        state.last_prompt = Some("正在输出转换后语音".into());
+        if output_written {
+            state.output_written_frames += 1;
+        }
+        state.tts_job_id = metadata.tts_job_id.clone();
+        state.audio_chunk_index = metadata.audio_chunk_index;
+        if monitor_written {
+            state.monitor_frames += 1;
+        }
+        if write_virtual_mic && virtual_mic_result.is_ok() {
+            state.virtual_mic_frames += 1;
+        } else if let Err(error) = &virtual_mic_result {
+            state.last_error = Some(error.to_string());
+        }
+        push_ledger(state, "playback", "client_audio_played_queued", |entry| {
+            entry.tts_job_id = metadata.tts_job_id.clone();
+            entry.audio_chunk_index = Some(expected);
+            entry.playback_queue_ms = Some(playback_buffer.queued_ms(format) as u64);
+            entry.status = Some(if output_written { "played" } else { "queued" }.into());
+            entry.message = Some(format!(
+                "monitor={} virtual_mic={}",
+                monitor_written,
+                write_virtual_mic && virtual_mic_result.is_ok()
+            ));
+        });
+    });
+    if let Some(event) = client_audio_played_event(
+        metadata.chunk_id,
+        metadata.tts_job_id,
+        expected,
+        if output_written { "played" } else { "queued" },
+        playback_buffer.queued_ms(format),
+    ) {
+        pending_client_events.push(event);
+    }
+    true
+}
+
+fn client_audio_played_event(
+    chunk_id: Option<String>,
+    tts_job_id: Option<String>,
+    audio_chunk_index: u64,
+    status: &str,
+    playback_queue_ms: usize,
+) -> Option<Value> {
+    let chunk_id = chunk_id?;
+    Some(json!({
+        "event": "client.audio_played",
+        "payload": {
+            "chunk_id": chunk_id,
+            "tts_job_id": tts_job_id,
+            "audio_chunk_index": audio_chunk_index,
+            "playback_queue_ms": playback_queue_ms,
+            "status": status,
+            "client_ts_ms": chrono::Utc::now().timestamp_millis(),
+        }
+    }))
+}
+
+fn client_audio_backpressure_event(level: &str, playback_queue_ms: usize, reason: &str) -> Value {
+    json!({
+        "event": "client.audio_backpressure",
+        "payload": {
+            "level": level,
+            "playback_queue_ms": playback_queue_ms,
+            "reason": reason,
+            "client_ts_ms": chrono::Utc::now().timestamp_millis(),
+        }
+    })
+}
+
+async fn flush_client_events<S>(write: &mut S, pending_client_events: &mut Vec<Value>) -> AppResult<()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    for event in std::mem::take(pending_client_events) {
+        write
+            .send(Message::Text(event.to_string()))
+            .await
+            .map_err(|error| AppError::realtime_session(format!("FunSpeech websocket send failed: {error}")))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2040,6 +2463,43 @@ fn apply_tts_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
     }
 }
 
+fn apply_output_drop_status(state: &mut RealtimeStreamSnapshot, status: &str) {
+    match status {
+        "gap_skip" => state.output_gap_skips += 1,
+        "late_drop" => state.output_late_drops += 1,
+        "playback_overflow_drop" => state.output_overflow_drops += 1,
+        "duplicate_drop" => state.output_duplicate_drops += 1,
+        _ => {}
+    }
+}
+
+fn reset_output_flow_metrics(state: &mut RealtimeStreamSnapshot) {
+    state.output_playback_queue_ms = 0;
+    state.output_last_frame_gap_ms = None;
+    state.output_max_frame_gap_ms = None;
+    state.output_gap_skips = 0;
+    state.output_late_drops = 0;
+    state.output_overflow_drops = 0;
+    state.output_duplicate_drops = 0;
+    state.output_playable_frames = 0;
+    state.first_output_latency_ms = None;
+    state.last_output_at_ms = None;
+}
+
+fn push_ledger(
+    state: &mut RealtimeStreamSnapshot,
+    stage: impl Into<String>,
+    event: impl Into<String>,
+    patch: impl FnOnce(&mut RealtimeLedgerEntry),
+) {
+    let mut entry = RealtimeLedgerEntry::new(stage, event);
+    patch(&mut entry);
+    if state.ledger.len() >= REALTIME_LEDGER_LIMIT {
+        state.ledger.remove(0);
+    }
+    state.ledger.push(entry);
+}
+
 fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
     if let Some(event) = event_name(value) {
         state.last_event = Some(event.to_string());
@@ -2078,6 +2538,9 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
             }
             "configured" | "ready" | "voice_switched" | "voice_updated" => {
                 state.websocket_state = "running".into();
+                if let Some(config) = payload_value(value, "realtime_config") {
+                    state.server_realtime_config = Some(config);
+                }
                 if let Some(audio_mode) = payload_string(value, "audio_mode") {
                     state.audio_mode = Some(audio_mode);
                 }
@@ -2110,6 +2573,9 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                 state.last_prompt = state.last_error.clone().or_else(|| Some("实时会话发生错误".into()));
             }
             "input.audio_dequeued" => {
+                if let Some(seq) = payload_u64(value, "input_frame_index") {
+                    state.server_dequeued_seq = Some(seq);
+                }
                 state.pipeline_stage = "input_audio_dequeued".into();
                 if let Some(is_silence) = payload_bool(value, "is_silence") {
                     state.input_health = Some(if is_silence {
@@ -2118,6 +2584,14 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                         "服务端正在接收有效输入".into()
                     });
                 }
+                let server_dequeued_seq = state.server_dequeued_seq;
+                let input_message = state.input_health.clone();
+                push_ledger(state, "server_input", event, |entry| {
+                    entry.server_dequeued_seq = server_dequeued_seq;
+                    entry.playback_queue_ms = payload_u64(value, "queue_ms");
+                    entry.status = payload_string(value, "vad_state");
+                    entry.message = input_message;
+                });
                 state.last_prompt = Some("正在接收麦克风输入".into());
             }
             "vad.speech_frame" => {
@@ -2127,6 +2601,7 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                 state.last_prompt = Some("VAD 检测到语音，正在送入 ASR".into());
             }
             "vad.speech_started" => {
+                state.vad_speech_frames += 1;
                 state.pipeline_stage = "vad_speech_started".into();
                 state.input_health = Some("VAD 检测到开始说话".into());
                 state.last_prompt = Some("检测到开始说话".into());
@@ -2137,11 +2612,52 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                 state.input_health = Some("VAD 检测到本句结束".into());
                 state.last_prompt = Some("本句语音结束，等待变声输出".into());
             }
+            "asr.segment_committed" => {
+                state.asr_committed_segments += 1;
+                state.asr_committed_audio_ms += payload_u64(value, "duration_ms").unwrap_or_default();
+                state.asr_segment_id = payload_string(value, "segment_id");
+                state.asr_first_frame_seq = payload_u64(value, "first_input_frame_index");
+                state.asr_last_frame_seq = payload_u64(value, "last_input_frame_index");
+                state.asr_commit_reason = payload_string(value, "commit_reason");
+                state.asr_queue_ms = payload_u64(value, "queue_ms");
+                state.pipeline_stage = "asr_segment_committed".into();
+                state.last_prompt = Some("ASR 连续语音段已入队".into());
+                let asr_segment_id = state.asr_segment_id.clone();
+                let asr_first_frame_seq = state.asr_first_frame_seq;
+                let asr_last_frame_seq = state.asr_last_frame_seq;
+                let asr_commit_reason = state.asr_commit_reason.clone();
+                let asr_queue_ms = state.asr_queue_ms;
+                push_ledger(state, "asr_segment", event, |entry| {
+                    entry.asr_segment_id = asr_segment_id;
+                    entry.asr_first_frame_seq = asr_first_frame_seq;
+                    entry.asr_last_frame_seq = asr_last_frame_seq;
+                    entry.asr_commit_reason = asr_commit_reason;
+                    entry.asr_queue_ms = asr_queue_ms;
+                    entry.status = Some(if payload_bool(value, "is_final").unwrap_or(false) {
+                        "final".into()
+                    } else {
+                        "partial".into()
+                    });
+                    entry.message = Some(format!(
+                        "duration={}ms frames={}",
+                        payload_u64(value, "duration_ms").unwrap_or_default(),
+                        payload_u64(value, "frame_count").unwrap_or_default()
+                    ));
+                });
+            }
             "backpressure.applied" => {
                 let reason = payload_string(value, "reason").unwrap_or_else(|| "backpressure".into());
                 let message = payload_string(value, "message").unwrap_or_else(|| "处理压力较高，可能有轻微延迟".into());
                 state.backpressure_hint = Some(if message.trim().is_empty() { reason } else { message });
                 state.pipeline_stage = "backpressure_applied".into();
+                let backpressure_hint = state.backpressure_hint.clone();
+                push_ledger(state, "backpressure", event, |entry| {
+                    entry.status = payload_string(value, "reason");
+                    entry.message = backpressure_hint;
+                    entry.asr_queue_ms = payload_u64(value, "queue_ms");
+                    entry.asr_first_frame_seq = payload_u64(value, "first_dropped_seq");
+                    entry.asr_last_frame_seq = payload_u64(value, "last_dropped_seq");
+                });
                 state.last_prompt = Some("处理压力较高，可能有轻微延迟".into());
             }
             "asr.hypothesis" | "asr_result" => {
@@ -2156,10 +2672,29 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                 state.last_prompt = Some("正在识别语音".into());
             }
             "asr.text_committed" => {
-                if let Some(text) = payload_string(value, "full_text").or_else(|| payload_string(value, "delta_text")) {
+                if let Some(delta_text) = payload_string(value, "delta_text") {
+                    let committed = state.asr_committed_text.get_or_insert_with(String::new);
+                    committed.push_str(&delta_text);
+                    state.asr_committed_chars += delta_text.chars().count() as u64;
+                    state.asr_text = Some(committed.clone());
+                } else if let Some(text) = payload_string(value, "full_text") {
+                    state.asr_committed_chars = text.chars().count() as u64;
+                    state.asr_committed_text = Some(text.clone());
                     state.asr_text = Some(text);
                 }
                 state.pipeline_stage = "text_committed".into();
+                let revision_id = state.revision_id;
+                let tts_job_id = state.tts_job_id.clone();
+                push_ledger(state, "asr_text", event, |entry| {
+                    entry.tts_revision_id = revision_id;
+                    entry.tts_job_id = tts_job_id;
+                    entry.message = payload_string(value, "delta_text").or_else(|| payload_string(value, "full_text"));
+                    entry.status = Some(if payload_bool(value, "is_final").unwrap_or(false) {
+                        "final".into()
+                    } else {
+                        "stable".into()
+                    });
+                });
                 state.last_prompt = Some("已确认文本，正在准备变声".into());
             }
             "asr.sentence_finalized" => {
@@ -2170,11 +2705,31 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
                 state.last_prompt = Some("本句语音识别完成".into());
             }
             "tts.job_queued" => {
+                state.tts_queued_jobs += 1;
+                state.tts_queued_chars += payload_text_chars(value, "text");
                 state.pipeline_stage = "tts_queued".into();
+                let revision_id = state.revision_id;
+                let tts_job_id = state.tts_job_id.clone();
+                push_ledger(state, "tts_queue", event, |entry| {
+                    entry.tts_revision_id = revision_id;
+                    entry.tts_job_id = tts_job_id;
+                    entry.status = payload_string(value, "priority");
+                    entry.message = payload_string(value, "text");
+                });
                 state.last_prompt = Some("变声任务已排队".into());
             }
             "tts.job_started" => {
+                state.tts_started_jobs += 1;
+                state.tts_started_chars += payload_text_chars(value, "text");
                 state.pipeline_stage = "tts_synthesizing".into();
+                let revision_id = state.revision_id;
+                let tts_job_id = state.tts_job_id.clone();
+                push_ledger(state, "tts_synth", event, |entry| {
+                    entry.tts_revision_id = revision_id;
+                    entry.tts_job_id = tts_job_id;
+                    entry.status = payload_string(value, "priority");
+                    entry.message = payload_string(value, "text");
+                });
                 state.last_prompt = Some("正在合成目标音色".into());
             }
             "tts.first_audio" => {
@@ -2184,15 +2739,56 @@ fn apply_json_event(state: &mut RealtimeStreamSnapshot, value: &Value) {
             "tts.audio_chunk" => {
                 state.tts_audio_chunks += 1;
                 state.pipeline_stage = "tts_audio_chunk_ready".into();
+                let revision_id = state.revision_id;
+                let tts_job_id = state.tts_job_id.clone();
+                let audio_chunk_index = state.audio_chunk_index;
+                push_ledger(state, "output_metadata", event, |entry| {
+                    entry.tts_revision_id = revision_id;
+                    entry.tts_job_id = tts_job_id;
+                    entry.audio_chunk_index = audio_chunk_index;
+                    entry.status = Some("metadata".into());
+                    entry.message = Some(format!("bytes={}", payload_u64(value, "bytes").unwrap_or_default()));
+                });
                 state.last_prompt = Some("正在输出转换后语音".into());
             }
             "client.audio_ack.received" => {
                 state.pipeline_stage = "client_audio_ack_received".into();
+                push_ledger(state, "playback_ack", event, |entry| {
+                    entry.playback_queue_ms = payload_u64(value, "playback_queue_ms");
+                    entry.audio_chunk_index = payload_u64(value, "audio_chunk_index");
+                    entry.status = Some("server_received".into());
+                });
                 state.last_prompt = Some("服务端已确认客户端收到变声音频".into());
             }
             "tts.job_completed" | "tts_completed" => {
+                if event == "tts.job_completed" {
+                    state.tts_completed_jobs += 1;
+                    state.tts_completed_chars += payload_text_chars(value, "text");
+                }
                 state.pipeline_stage = "tts_completed".into();
+                let revision_id = state.revision_id;
+                let tts_job_id = state.tts_job_id.clone();
+                push_ledger(state, "tts_synth", event, |entry| {
+                    entry.tts_revision_id = revision_id;
+                    entry.tts_job_id = tts_job_id;
+                    entry.status = Some("completed".into());
+                    entry.message = payload_string(value, "text");
+                });
                 state.last_prompt = Some("本段语音转换完成".into());
+            }
+            "tts.job_dropped" => {
+                state.tts_dropped_jobs += 1;
+                state.tts_dropped_chars += payload_text_chars(value, "text");
+                state.pipeline_stage = "tts_dropped".into();
+                let revision_id = state.revision_id;
+                let tts_job_id = state.tts_job_id.clone();
+                push_ledger(state, "tts_queue", event, |entry| {
+                    entry.tts_revision_id = revision_id;
+                    entry.tts_job_id = tts_job_id;
+                    entry.status = payload_string(value, "reason").or_else(|| Some("dropped".into()));
+                    entry.message = payload_string(value, "text");
+                });
+                state.last_prompt = Some("变声任务被服务端丢弃".into());
             }
             _ => {}
         }
@@ -2220,9 +2816,11 @@ mod tests {
     };
 
     use super::{
-        apply_asr_event, apply_json_event, apply_tts_event, funspeech_realtime_format, is_final_asr_event,
-        resample_samples_linear, run_synthesis_message, start_synthesis_message, start_transcription_message,
-        text_from_asr_event, RealtimeInputFrameCutter, RealtimeStreamSnapshot,
+        apply_asr_event, apply_json_event, apply_output_drop_status, apply_tts_event, client_audio_backpressure_event,
+        client_audio_played_event, funspeech_realtime_format, is_final_asr_event, resample_samples_linear,
+        run_synthesis_message, start_synthesis_message, start_transcription_message, text_from_asr_event,
+        OrderedPlaybackBuffer, PendingOutputChunk, RealtimeInputFrameCutter, RealtimeStreamSnapshot,
+        PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_JITTER_PREBUFFER_MS, PLAYBACK_MAX_PENDING,
     };
 
     #[test]
@@ -2292,6 +2890,179 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(chunks.iter().all(|chunk| chunk.bytes.len() == 640));
         assert!(chunks.iter().all(|chunk| chunk.level.rms > 0.0));
+    }
+
+    #[test]
+    fn realtime_client_control_events_match_funspeech_protocol() {
+        assert_eq!(PLAYBACK_JITTER_PREBUFFER_MS, 0);
+
+        let played = client_audio_played_event(Some("tts_1_chunk_1".into()), Some("tts_1".into()), 1, "played", 0)
+            .expect("chunk_id is required for FunSpeech playback flow control");
+        assert_eq!(played["event"], "client.audio_played");
+        assert_eq!(played["payload"]["chunk_id"], "tts_1_chunk_1");
+        assert_eq!(played["payload"]["tts_job_id"], "tts_1");
+        assert_eq!(played["payload"]["audio_chunk_index"], 1);
+
+        let backpressure = client_audio_backpressure_event("drop", 120, "playback_overflow_drop");
+        assert_eq!(backpressure["event"], "client.audio_backpressure");
+        assert_eq!(backpressure["payload"]["level"], "drop");
+        assert_eq!(backpressure["payload"]["playback_queue_ms"], 120);
+        assert_eq!(backpressure["payload"]["reason"], "playback_overflow_drop");
+
+        assert!(client_audio_played_event(None, Some("tts_1".into()), 1, "played", 0).is_none());
+    }
+
+    #[test]
+    fn ordered_playback_buffer_waits_for_contiguous_audio_before_playing() {
+        let format = PcmFormat::default();
+        let mut buffer = OrderedPlaybackBuffer::new(PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_MAX_PENDING, 0);
+
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: None,
+                    tts_job_id: Some("tts_1".into()),
+                    audio_chunk_index: Some(1),
+                    expected_bytes: Some(2),
+                },
+                vec![1, 1],
+                Some(10),
+            )
+            .expect("chunk 1 should queue");
+        let (index, _) = buffer.pop_playable(format).expect("chunk 1 should play");
+        assert_eq!(index, 1);
+
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: None,
+                    tts_job_id: Some("tts_1".into()),
+                    audio_chunk_index: Some(3),
+                    expected_bytes: Some(2),
+                },
+                vec![3, 3],
+                Some(30),
+            )
+            .expect("chunk 3 should queue");
+        assert!(buffer.pop_playable(format).is_none());
+    }
+
+    #[test]
+    fn ordered_playback_buffer_skips_gap_when_playback_pressure_builds() {
+        let format = PcmFormat::default();
+        let mut buffer = OrderedPlaybackBuffer::new(2, PLAYBACK_MAX_PENDING, 0);
+
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: None,
+                    tts_job_id: Some("tts_1".into()),
+                    audio_chunk_index: Some(1),
+                    expected_bytes: Some(2),
+                },
+                vec![1, 1],
+                Some(10),
+            )
+            .expect("chunk 1 should queue");
+        let (index, _) = buffer.pop_playable(format).expect("chunk 1 should play");
+        assert_eq!(index, 1);
+
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: None,
+                    tts_job_id: Some("tts_1".into()),
+                    audio_chunk_index: Some(4),
+                    expected_bytes: Some(2),
+                },
+                vec![4, 4],
+                Some(40),
+            )
+            .expect("chunk 4 should queue");
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: None,
+                    tts_job_id: Some("tts_1".into()),
+                    audio_chunk_index: Some(5),
+                    expected_bytes: Some(2),
+                },
+                vec![5, 5],
+                Some(50),
+            )
+            .expect("chunk 5 should queue");
+
+        let drops = buffer.apply_pressure();
+        assert_eq!(drops[0].status, "gap_skip");
+        assert_eq!(drops[0].audio_chunk_index, 2);
+        let (index, frame) = buffer.pop_playable(format).expect("chunk 4 should play after gap skip");
+        assert_eq!(index, 4);
+        assert_eq!(frame.bytes, vec![4, 4]);
+    }
+
+    #[test]
+    fn ordered_playback_buffer_waits_for_fixed_jitter_prebuffer() {
+        let format = PcmFormat {
+            frame_ms: 20,
+            ..Default::default()
+        };
+        let mut buffer = OrderedPlaybackBuffer::new(PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_MAX_PENDING, 40);
+
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: None,
+                    tts_job_id: Some("tts_1".into()),
+                    audio_chunk_index: Some(1),
+                    expected_bytes: Some(2),
+                },
+                vec![1, 1],
+                Some(10),
+            )
+            .expect("chunk 1 should queue");
+        assert!(buffer.pop_playable(format).is_none());
+
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: None,
+                    tts_job_id: Some("tts_1".into()),
+                    audio_chunk_index: Some(2),
+                    expected_bytes: Some(2),
+                },
+                vec![2, 2],
+                Some(20),
+            )
+            .expect("chunk 2 should queue");
+        let (index, _) = buffer.pop_playable(format).expect("prebuffer is full");
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn realtime_snapshot_tracks_output_drop_statuses_separately() {
+        let session = RealtimeSession {
+            session_id: "session-1".into(),
+            trace_id: "trace-1".into(),
+            voice_name: "desktop_voice".into(),
+            runtime_params: RuntimeParams::default(),
+            status: RealtimeSessionStatus::Running,
+            websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let mut snapshot = RealtimeStreamSnapshot::pending(&session);
+
+        apply_output_drop_status(&mut snapshot, "gap_skip");
+        apply_output_drop_status(&mut snapshot, "late_drop");
+        apply_output_drop_status(&mut snapshot, "playback_overflow_drop");
+        apply_output_drop_status(&mut snapshot, "duplicate_drop");
+
+        assert_eq!(snapshot.output_gap_skips, 1);
+        assert_eq!(snapshot.output_late_drops, 1);
+        assert_eq!(snapshot.output_overflow_drops, 1);
+        assert_eq!(snapshot.output_duplicate_drops, 1);
+        assert_eq!(snapshot.output_ack_mismatches, 0);
     }
 
     #[test]
@@ -2407,5 +3178,39 @@ mod tests {
 
         assert_eq!(snapshot.audio_chunk_index, Some(2));
         assert_eq!(snapshot.last_prompt.as_deref(), Some("正在输出转换后语音"));
+
+        apply_json_event(
+            &mut snapshot,
+            &json!({
+                "event": "asr.segment_committed",
+                "payload": {
+                    "segment_id": "utt_1_seg_3",
+                    "utterance_id": "utt_1",
+                    "first_input_frame_index": 41,
+                    "last_input_frame_index": 80,
+                    "duration_ms": 800,
+                    "frame_count": 40,
+                    "is_final": false,
+                    "commit_reason": "partial",
+                    "queue_ms": 120
+                }
+            }),
+        );
+
+        assert_eq!(snapshot.asr_committed_segments, 1);
+        assert_eq!(snapshot.asr_segment_id.as_deref(), Some("utt_1_seg_3"));
+        assert_eq!(snapshot.asr_first_frame_seq, Some(41));
+        assert_eq!(snapshot.asr_last_frame_seq, Some(80));
+        assert_eq!(snapshot.asr_queue_ms, Some(120));
+        assert!(snapshot
+            .ledger
+            .iter()
+            .any(|entry| entry.stage == "asr_segment" && entry.asr_first_frame_seq == Some(41)));
+
+        apply_json_event(
+            &mut snapshot,
+            &json!({"event": "vad.speech_started", "payload": {"utterance_id": "utt_2"}}),
+        );
+        assert_eq!(snapshot.vad_speech_frames, 1);
     }
 }

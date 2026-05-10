@@ -63,6 +63,7 @@ pub fn run() {
             tauri_api::realtime_commands::list_realtime_sessions,
             tauri_api::realtime_commands::get_realtime_stream_snapshot,
             tauri_api::realtime_commands::list_realtime_stream_snapshots,
+            tauri_api::realtime_commands::run_realtime_full_chain_simulation,
             tauri_api::offline_commands::create_offline_audio_job,
             tauri_api::offline_commands::create_offline_text_job,
             tauri_api::offline_commands::list_offline_tts_emotions,
