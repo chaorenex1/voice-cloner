@@ -4,6 +4,7 @@ pub mod offline_commands;
 pub mod realtime_commands;
 pub mod settings_commands;
 pub mod voice_design_commands;
+pub mod voice_separation_commands;
 pub mod voice_sync_commands;
 
 pub use app_commands::{get_app_runtime_info, get_app_summary};
@@ -27,6 +28,12 @@ pub use voice_design_commands::{
     fail_voice_design_draft, get_custom_voice, get_voice_design_draft, list_custom_voices, list_voice_design_drafts,
     save_custom_voice_profile, save_voice_design_draft, start_voice_design_asr, start_voice_design_generation,
     start_voice_design_llm, transcribe_reference_audio,
+};
+pub use voice_separation_commands::{
+    cancel_voice_separation_job, check_voice_separation_runtime, create_voice_separation_job,
+    delete_voice_separation_job, download_voice_separation_stem, get_voice_separation_job, list_voice_separation_jobs,
+    preview_voice_separation_stem, save_separated_vocals_as_custom_voice, start_voice_separation_job,
+    stop_voice_separation_preview, transcribe_separated_vocals,
 };
 pub use voice_sync_commands::{
     delete_custom_voice_sync, fail_voice_sync, list_remote_voices, list_voice_sync_reports, refresh_voice_runtime,

@@ -15,6 +15,7 @@ pub struct AppPaths {
     preset_preview_dir: PathBuf,
     offline_inputs_dir: PathBuf,
     voice_design_artifacts_dir: PathBuf,
+    voice_separation_jobs_dir: PathBuf,
     offline_exports_dir: PathBuf,
     library_dir: PathBuf,
     custom_voices_dir: PathBuf,
@@ -42,6 +43,7 @@ impl AppPaths {
         let preset_preview_dir = cache_dir.join("preset-preview");
         let offline_inputs_dir = cache_dir.join("offline-inputs");
         let voice_design_artifacts_dir = cache_dir.join("voice-design-artifacts");
+        let voice_separation_jobs_dir = cache_dir.join("voice-separation-jobs");
         let offline_exports_dir = cache_dir.join("offline-exports");
         let library_dir = root.join("library");
         let custom_voices_dir = library_dir.join("custom-voices");
@@ -55,6 +57,7 @@ impl AppPaths {
             preset_preview_dir,
             offline_inputs_dir,
             voice_design_artifacts_dir,
+            voice_separation_jobs_dir,
             offline_exports_dir,
             library_dir,
             custom_voices_dir,
@@ -72,6 +75,7 @@ impl AppPaths {
             &self.preset_preview_dir,
             &self.offline_inputs_dir,
             &self.voice_design_artifacts_dir,
+            &self.voice_separation_jobs_dir,
             &self.offline_exports_dir,
             &self.library_dir,
             &self.custom_voices_dir,
@@ -99,6 +103,10 @@ impl AppPaths {
 
     pub fn voice_design_artifacts_dir(&self) -> PathBuf {
         self.voice_design_artifacts_dir.clone()
+    }
+
+    pub fn voice_separation_jobs_dir(&self) -> PathBuf {
+        self.voice_separation_jobs_dir.clone()
     }
 
     pub fn offline_exports_dir(&self) -> PathBuf {
@@ -136,6 +144,10 @@ mod tests {
         assert_eq!(
             paths.voice_design_artifacts_dir(),
             root.join("cache/voice-design-artifacts")
+        );
+        assert_eq!(
+            paths.voice_separation_jobs_dir(),
+            root.join("cache/voice-separation-jobs")
         );
         assert_eq!(paths.offline_exports_dir(), root.join("cache/offline-exports"));
         assert_eq!(paths.custom_voices_dir(), root.join("library/custom-voices"));

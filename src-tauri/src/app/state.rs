@@ -9,7 +9,7 @@ use crate::{
         asset_cache::AssetCache, offline_job_manager::OfflineJobManager,
         realtime_stream_manager::RealtimeStreamManager, session_manager::SessionManager,
         settings_manager::SettingsManager, voice_design_manager::VoiceDesignManager, voice_library::VoiceLibrary,
-        voice_sync_manager::VoiceSyncManager,
+        voice_separation_manager::VoiceSeparationManager, voice_sync_manager::VoiceSyncManager,
     },
     storage::app_paths::AppPaths,
 };
@@ -27,6 +27,7 @@ pub struct AppState {
     offline_jobs: Arc<OfflineJobManager>,
     asset_cache: Arc<AssetCache>,
     voice_design: Arc<VoiceDesignManager>,
+    voice_separation: Arc<VoiceSeparationManager>,
     voice_library: Arc<VoiceLibrary>,
     voice_sync: Arc<VoiceSyncManager>,
 }
@@ -41,6 +42,7 @@ impl AppState {
         )?;
         let voice_library = VoiceLibrary::new(paths.custom_voices_dir())?;
         let voice_sync = VoiceSyncManager::new(paths.sync_state_file());
+        let voice_separation = VoiceSeparationManager::new(paths.voice_separation_jobs_dir())?;
 
         let loaded_settings = settings.load_or_default()?;
         let virtual_mic = SelectableVirtualMicAdapter::default();
@@ -60,6 +62,7 @@ impl AppState {
             offline_jobs: Arc::new(offline_jobs),
             asset_cache: Arc::new(asset_cache),
             voice_design: Arc::new(VoiceDesignManager::default()),
+            voice_separation: Arc::new(voice_separation),
             voice_library: Arc::new(voice_library),
             voice_sync: Arc::new(voice_sync),
         })
@@ -111,6 +114,10 @@ impl AppState {
 
     pub fn voice_design(&self) -> &VoiceDesignManager {
         &self.voice_design
+    }
+
+    pub fn voice_separation(&self) -> &VoiceSeparationManager {
+        &self.voice_separation
     }
 
     pub fn voice_library(&self) -> &VoiceLibrary {

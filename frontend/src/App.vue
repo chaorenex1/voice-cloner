@@ -6,6 +6,7 @@ import OfflineVoicePage from './pages/OfflineVoicePage.vue';
 import RealtimeVoicePage from './pages/RealtimeVoicePage.vue';
 import SettingsPage from './pages/SettingsPage.vue';
 import VoiceLibraryPage from './pages/VoiceLibraryPage.vue';
+import VoiceSeparationPage from './pages/VoiceSeparationPage.vue';
 import { getSettings } from './services/tauri/settings';
 import type { OfflineJob } from './utils/types/offline';
 
@@ -41,9 +42,9 @@ const navItems: NavItem[] = [
     description: '承载文件转换、导出队列与历史记录页面。',
   },
   {
-    key: 'design',
-    label: '音色设计',
-    description: '承载音色创建、调参和实验工作区。',
+    key: 'separation',
+    label: '人声分离',
+    description: '从视频或音频提取人声，并保存为自定义音色。',
   },
   {
     key: 'settings',
@@ -64,7 +65,7 @@ const currentModule = computed(
 );
 
 const hasImplementedPage = computed(() =>
-  ['voices', 'realtime', 'offline', 'settings'].includes(activeNavKey.value)
+  ['voices', 'realtime', 'offline', 'separation', 'settings'].includes(activeNavKey.value)
 );
 
 onMounted(async () => {
@@ -173,7 +174,7 @@ async function showOfflineCompletionNotification(job: OfflineJob): Promise<void>
 
     <main
       class="main-content"
-      :class="{ 'main-content--locked': ['realtime', 'offline'].includes(activeNavKey) }"
+      :class="{ 'main-content--locked': ['realtime', 'offline', 'separation'].includes(activeNavKey) }"
       aria-live="polite"
     >
       <VoiceLibraryPage v-if="activeNavKey === 'voices'" />
@@ -182,6 +183,7 @@ async function showOfflineCompletionNotification(job: OfflineJob): Promise<void>
         @open-device-settings="openDeviceSettingsFromRealtime"
       />
       <OfflineVoicePage v-else-if="activeNavKey === 'offline'" />
+      <VoiceSeparationPage v-else-if="activeNavKey === 'separation'" />
       <SettingsPage
         v-else-if="activeNavKey === 'settings'"
         :return-target="settingsReturnNavKey"

@@ -164,3 +164,7 @@ logs/
 .DS_Store
 Thumbs.db
 .omx/
+# Voice separation sidecars
+/src-tauri/binaries/*
+!/src-tauri/binaries/.gitkeep
+/src-tauri/.sidecar-cache/

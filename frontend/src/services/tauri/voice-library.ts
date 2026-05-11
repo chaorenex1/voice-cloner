@@ -58,7 +58,7 @@ function cloneVoiceSummaries(voices: VoiceSummary[]): VoiceSummary[] {
   return structuredClone(voices);
 }
 
-function invalidateCustomVoiceCache(): void {
+export function invalidateCustomVoiceCache(): void {
   voiceListCache = null;
   voiceListPromise = null;
 }
