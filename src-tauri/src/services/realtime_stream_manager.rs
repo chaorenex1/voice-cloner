@@ -21,7 +21,11 @@ use crate::{
         frame::{AudioFrame, AudioLevel, PcmFormat, SampleFormat},
         virtual_mic::{SelectableVirtualMicAdapter, VirtualMicAdapter},
     },
-    domain::{runtime_params::RuntimeParams, session::RealtimeSession},
+    domain::{
+        runtime_params::RuntimeParams,
+        session::RealtimeSession,
+        voice_separation::{DenoiseMode, VoicePostProcessConfig},
+    },
 };
 
 const FUNSPEECH_REALTIME_SAMPLE_RATE: u32 = 16_000;
@@ -675,6 +679,7 @@ async fn run_realtime_voice_stream(
                         &mut last_playable_output_at,
                         output_timeline_started_at,
                         &mut pending_client_events,
+                        session.post_process_config.as_ref(),
                         debug_enabled,
                         playback_ack_enabled,
                     );
@@ -1315,6 +1320,8 @@ async fn run_asr_tts_stream(
                                     )
                                 })
                                 .unwrap_or_else(|| frame_samples.clone());
+                            let samples =
+                                apply_realtime_post_process(&samples, session.post_process_config.as_ref());
                             let frame = AudioFrame {
                                 sequence,
                                 timestamp_ms: chrono::Utc::now().timestamp_millis(),
@@ -1405,6 +1412,50 @@ fn funspeech_realtime_format(local_format: PcmFormat) -> PcmFormat {
         sample_format: SampleFormat::I16,
         frame_ms: local_format.frame_ms,
     }
+}
+
+fn apply_realtime_post_process(samples: &[f32], config: Option<&VoicePostProcessConfig>) -> Vec<f32> {
+    let config = config
+        .cloned()
+        .unwrap_or_else(VoicePostProcessConfig::default_stereo_output);
+    let mut processed = samples.to_vec();
+    match config.denoise_mode {
+        DenoiseMode::Off => {}
+        DenoiseMode::Standard => apply_noise_gate(&mut processed, 0.003),
+        DenoiseMode::Strong => apply_noise_gate(&mut processed, 0.008),
+    }
+    if config.loudness_normalization {
+        normalize_realtime_loudness(&mut processed, config.target_lufs, config.peak_limiter);
+    }
+    processed
+}
+
+fn apply_noise_gate(samples: &mut [f32], threshold: f32) {
+    for sample in samples {
+        if sample.abs() < threshold {
+            *sample = 0.0;
+        }
+    }
+}
+
+fn normalize_realtime_loudness(samples: &mut [f32], target_lufs: f32, peak_limiter: bool) {
+    if samples.is_empty() {
+        return;
+    }
+    let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
+    if rms <= 0.00001 {
+        return;
+    }
+    let target_rms = db_to_linear(target_lufs).clamp(0.001, 0.5);
+    let gain = (target_rms / rms).clamp(0.25, 4.0);
+    let limit = if peak_limiter { 0.95 } else { 1.0 };
+    for sample in samples {
+        *sample = (*sample * gain).clamp(-limit, limit);
+    }
+}
+
+fn db_to_linear(db: f32) -> f32 {
+    10.0_f32.powf(db / 20.0)
 }
 
 fn funspeech_realtime_parameters(params: &RuntimeParams) -> Value {
@@ -1762,6 +1813,7 @@ fn drain_one_playback_frame(
     last_playable_output_at: &mut Option<Instant>,
     output_timeline_started_at: Instant,
     pending_client_events: &mut Vec<Value>,
+    post_process_config: Option<&VoicePostProcessConfig>,
     debug_enabled: bool,
     playback_ack_enabled: bool,
 ) -> bool {
@@ -1780,6 +1832,7 @@ fn drain_one_playback_frame(
     let samples = pcm_i16_bytes_to_f32(&bytes, funspeech_format.samples_per_frame())
         .map(|samples| resample_samples_linear(&samples, funspeech_format.sample_rate, format.sample_rate))
         .unwrap_or_else(|| frame_samples.to_vec());
+    let samples = apply_realtime_post_process(&samples, post_process_config);
     let frame = AudioFrame {
         sequence: expected,
         timestamp_ms: chrono::Utc::now().timestamp_millis(),
@@ -2969,16 +3022,17 @@ mod tests {
         domain::{
             runtime_params::RuntimeParams,
             session::{RealtimeSession, RealtimeSessionStatus},
+            voice_separation::{DenoiseMode, VoicePostProcessConfig},
         },
     };
 
     use super::{
-        apply_asr_event, apply_json_event, apply_output_drop_status, apply_tts_event, client_audio_backpressure_event,
-        client_audio_played_event, funspeech_realtime_format, funspeech_realtime_parameters, is_final_asr_event,
-        resample_samples_linear, run_synthesis_message, start_synthesis_message, start_transcription_message,
-        text_from_asr_event, OrderedPlaybackBuffer, PendingOutputChunk, RealtimeInputFrameCutter,
-        RealtimeMonitorOutput, RealtimeStreamSnapshot, MONITOR_OUTPUT_IDLE_CHECK_MS, PLAYBACK_GAP_SKIP_PENDING,
-        PLAYBACK_JITTER_PREBUFFER_MS, PLAYBACK_MAX_PENDING,
+        apply_asr_event, apply_json_event, apply_output_drop_status, apply_realtime_post_process, apply_tts_event,
+        client_audio_backpressure_event, client_audio_played_event, funspeech_realtime_format,
+        funspeech_realtime_parameters, is_final_asr_event, resample_samples_linear, run_synthesis_message,
+        start_synthesis_message, start_transcription_message, text_from_asr_event, OrderedPlaybackBuffer,
+        PendingOutputChunk, RealtimeInputFrameCutter, RealtimeMonitorOutput, RealtimeStreamSnapshot,
+        MONITOR_OUTPUT_IDLE_CHECK_MS, PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_JITTER_PREBUFFER_MS, PLAYBACK_MAX_PENDING,
     };
 
     #[test]
@@ -2993,6 +3047,7 @@ mod tests {
             trace_id: "trace-1".into(),
             voice_name: "desktop_voice".into(),
             runtime_params: RuntimeParams::default(),
+            post_process_config: None,
             status: RealtimeSessionStatus::Running,
             websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
             error_summary: None,
@@ -3016,6 +3071,21 @@ mod tests {
         let run = run_synthesis_message("tts-task", "你好");
         assert_eq!(run["header"]["name"], "RunSynthesis");
         assert_eq!(run["payload"]["text"], "你好");
+    }
+
+    #[test]
+    fn realtime_post_process_applies_noise_gate_and_loudness_gain() {
+        let config = VoicePostProcessConfig {
+            denoise_mode: DenoiseMode::Strong,
+            target_lufs: -12.0,
+            ..VoicePostProcessConfig::default_stereo_output()
+        };
+
+        let processed = apply_realtime_post_process(&[0.001, 0.02, -0.02], Some(&config));
+
+        assert_eq!(processed[0], 0.0);
+        assert!(processed[1].abs() > 0.02);
+        assert!(processed.iter().all(|sample| sample.abs() <= 0.95));
     }
 
     #[test]
@@ -3234,6 +3304,7 @@ mod tests {
             trace_id: "trace-1".into(),
             voice_name: "desktop_voice".into(),
             runtime_params: RuntimeParams::default(),
+            post_process_config: None,
             status: RealtimeSessionStatus::Running,
             websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
             error_summary: None,
@@ -3261,6 +3332,7 @@ mod tests {
             trace_id: "trace-1".into(),
             voice_name: "desktop_voice".into(),
             runtime_params: RuntimeParams::default(),
+            post_process_config: None,
             status: RealtimeSessionStatus::Running,
             websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
             error_summary: None,
@@ -3291,6 +3363,7 @@ mod tests {
             trace_id: "trace-1".into(),
             voice_name: "desktop_voice".into(),
             runtime_params: RuntimeParams::default(),
+            post_process_config: None,
             status: RealtimeSessionStatus::Running,
             websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
             error_summary: None,
@@ -3324,6 +3397,7 @@ mod tests {
             trace_id: "trace-1".into(),
             voice_name: "desktop_voice".into(),
             runtime_params: RuntimeParams::default(),
+            post_process_config: None,
             status: RealtimeSessionStatus::Running,
             websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
             error_summary: None,
@@ -3419,6 +3493,7 @@ mod tests {
             trace_id: "trace-1".into(),
             voice_name: "desktop_voice".into(),
             runtime_params: RuntimeParams::default(),
+            post_process_config: None,
             status: RealtimeSessionStatus::Running,
             websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
             error_summary: None,

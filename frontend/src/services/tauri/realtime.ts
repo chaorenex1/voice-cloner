@@ -124,6 +124,7 @@ function mockSession(request: CreateRealtimeSessionRequest): RealtimeSession {
     traceId: 'preview-realtime',
     voiceName: request.voiceName,
     runtimeParams: request.runtimeParams,
+    postProcessConfig: request.postProcessConfig ?? null,
     status: 'idle',
     websocketUrl: 'ws://127.0.0.1:8000/ws/v1/realtime/voice',
     errorSummary: null,
@@ -318,6 +319,7 @@ export async function updateRealtimeParams(
         traceId: 'preview-realtime',
         voiceName: 'preview',
         runtimeParams,
+        postProcessConfig: null,
         status: 'running',
         websocketUrl: 'ws://127.0.0.1:8000/ws/v1/realtime/voice',
         errorSummary: null,
@@ -340,6 +342,7 @@ export async function switchRealtimeVoice(
         traceId: 'preview-realtime',
         voiceName,
         runtimeParams: { values: {} },
+        postProcessConfig: null,
         status: 'running',
         websocketUrl: 'ws://127.0.0.1:8000/ws/v1/realtime/voice',
         errorSummary: null,
@@ -364,6 +367,7 @@ export async function runRealtimeFullChainSimulation(
     const session = mockSession({
       voiceName: request.voiceName,
       runtimeParams: request.runtimeParams ?? { values: {} },
+      postProcessConfig: undefined,
     });
     const running = { ...session, status: 'running' as const };
     const snapshot = {

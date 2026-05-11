@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::runtime_params::RuntimeParams;
+use super::{runtime_params::RuntimeParams, voice_separation::VoicePostProcessConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +21,8 @@ pub struct RealtimeSession {
     pub trace_id: String,
     pub voice_name: String,
     pub runtime_params: RuntimeParams,
+    #[serde(default)]
+    pub post_process_config: Option<VoicePostProcessConfig>,
     pub status: RealtimeSessionStatus,
     pub websocket_url: String,
     pub error_summary: Option<String>,

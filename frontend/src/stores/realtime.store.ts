@@ -27,6 +27,8 @@ import type {
 } from '../utils/types/realtime';
 import type { AppSettings } from '../utils/types/settings';
 import type { VoiceSummary } from '../utils/types/voice';
+import type { DenoiseMode, VoicePostProcessConfig } from '../utils/types/voice-separation';
+import { defaultStereoPostProcessConfig } from '../utils/types/voice-separation';
 
 export interface RealtimeParamState {
   pitchRate: number;
@@ -41,6 +43,7 @@ export interface RealtimeState {
   inputSource: 'microphone' | 'localFile';
   selectedInputFile: File | null;
   params: RealtimeParamState;
+  postProcessConfig: VoicePostProcessConfig;
   session: RealtimeSession | null;
   snapshot: RealtimeStreamSnapshot | null;
   inputCapturing: boolean;
@@ -75,6 +78,7 @@ const state = reactive<RealtimeState>({
     speechRate: 0,
     volume: 50,
   },
+  postProcessConfig: { ...defaultStereoPostProcessConfig },
   session: null,
   snapshot: null,
   inputCapturing: false,
@@ -219,6 +223,7 @@ export function useRealtimeStore() {
       const created = await createRealtimeSession({
         voiceName: state.selectedVoiceName,
         runtimeParams: runtimeParams(),
+        postProcessConfig: { ...state.postProcessConfig, channels: 'stereo', trimSilence: false },
       });
       state.session = created;
       state.lastMessage = '正在连接 FunSpeech Realtime Voice...';
@@ -439,6 +444,25 @@ export function useRealtimeStore() {
     }
   }
 
+  function setPostProcessDenoise(denoiseMode: DenoiseMode): void {
+    state.postProcessConfig = {
+      ...state.postProcessConfig,
+      denoiseMode,
+      channels: 'stereo',
+      trimSilence: false,
+    };
+  }
+
+  function setPostProcessLufs(targetLufs: number): void {
+    state.postProcessConfig = {
+      ...state.postProcessConfig,
+      targetLufs,
+      loudnessNormalization: true,
+      channels: 'stereo',
+      trimSilence: false,
+    };
+  }
+
   async function refreshSnapshot(): Promise<void> {
     if (!state.session || !isRunning.value || !isRealtimeDebugEnabled.value) {
       return;
@@ -480,6 +504,8 @@ export function useRealtimeStore() {
     toggleMonitor,
     selectVoice,
     setParam,
+    setPostProcessDenoise,
+    setPostProcessLufs,
     refreshSnapshot,
   };
 }

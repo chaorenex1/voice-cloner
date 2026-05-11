@@ -103,7 +103,7 @@ impl FfmpegSidecar {
         )
     }
 
-    pub fn post_process_vocals(
+    pub fn post_process_audio(
         &self,
         input: &Path,
         output: &Path,
@@ -126,7 +126,7 @@ impl FfmpegSidecar {
                 output.to_string_lossy().into_owned(),
             ],
             log_path,
-            "post-processing separated vocals",
+            "post-processing audio",
         )
     }
 
@@ -173,9 +173,6 @@ fn post_process_filter(config: &VoicePostProcessConfig) -> String {
         ));
     }
     filters.push(format!("aresample={}", config.target_sample_rate));
-    if config.channels == AudioChannelMode::Mono {
-        filters.push("pan=mono|c0=0.5*c0+0.5*c1".to_string());
-    }
     if config.peak_limiter {
         filters.push("alimiter=limit=0.95".to_string());
     }

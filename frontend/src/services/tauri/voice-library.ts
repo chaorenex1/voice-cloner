@@ -8,6 +8,7 @@ import type {
   VoiceSyncResult,
   VoiceSyncStatus,
 } from '../../utils/types/voice';
+import type { VoicePostProcessConfig, VoiceSeparationModel } from '../../utils/types/voice-separation';
 
 interface CustomVoiceProfileView {
   voiceName: string;
@@ -49,6 +50,9 @@ export interface CreateCustomVoiceRequest {
   referenceText: string;
   voiceInstruction?: string;
   upload: WavUploadPayload;
+  skipSeparation?: boolean;
+  separationModel?: VoiceSeparationModel;
+  postProcessConfig?: VoicePostProcessConfig;
 }
 
 let voiceListCache: VoiceSummary[] | null = null;
@@ -165,6 +169,9 @@ async function saveProfile(
       referenceText: detail.referenceText,
       referenceAudioFileName: upload?.fileName ?? null,
       referenceAudioBytes: upload?.bytes ?? null,
+      skipSeparation: true,
+      separationModel: null,
+      postProcessConfig: null,
     },
   });
 }
@@ -195,7 +202,18 @@ export async function createCustomVoice(
     referenceAudioFileName: request.upload.fileName,
     editable: true,
   };
-  const saved = await saveProfile(detail, request.upload);
+  const saved = await invoke<CustomVoiceProfileView>('save_custom_voice_profile', {
+    request: {
+      voiceName: detail.voiceName,
+      voiceInstruction: detail.voiceInstruction ?? '',
+      referenceText: detail.referenceText,
+      referenceAudioFileName: request.upload.fileName,
+      referenceAudioBytes: request.upload.bytes,
+      skipSeparation: request.skipSeparation ?? true,
+      separationModel: request.separationModel ?? null,
+      postProcessConfig: request.postProcessConfig ?? null,
+    },
+  });
   const report = await syncVoice(saved.voiceName, 'register');
   invalidateCustomVoiceCache();
   return {

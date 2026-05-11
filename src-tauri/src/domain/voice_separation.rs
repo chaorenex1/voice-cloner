@@ -115,6 +115,15 @@ impl Default for VoicePostProcessConfig {
     }
 }
 
+impl VoicePostProcessConfig {
+    pub fn default_stereo_output() -> Self {
+        Self {
+            channels: AudioChannelMode::Stereo,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioPostProcessReport {

@@ -19,6 +19,8 @@ import {
 import { listVoices } from '../services/tauri/voice-library';
 import type { OfflineInputType, OfflineJob, RuntimeParams, TtsEmotionOption } from '../utils/types/offline';
 import type { VoiceSummary } from '../utils/types/voice';
+import type { DenoiseMode, VoicePostProcessConfig } from '../utils/types/voice-separation';
+import { defaultStereoPostProcessConfig } from '../utils/types/voice-separation';
 
 export interface OfflineParamState {
   pitchRate: number;
@@ -36,6 +38,7 @@ export interface OfflineState {
   selectedEmotionLabel: string | null;
   outputFormat: 'wav';
   params: OfflineParamState;
+  postProcessConfig: VoicePostProcessConfig;
   emotionOptions: TtsEmotionOption[];
   voices: VoiceSummary[];
   jobs: OfflineJob[];
@@ -74,6 +77,7 @@ const state = reactive<OfflineState>({
     speechRate: 0,
     volume: 50,
   },
+  postProcessConfig: { ...defaultStereoPostProcessConfig },
   emotionOptions: [],
   voices: [],
   jobs: [],
@@ -312,6 +316,7 @@ export function useOfflineStore() {
           inputRef: state.selectedAudioPath,
           voiceName: state.selectedVoiceName!,
           runtimeParams: runtimeParams(),
+          postProcessConfig: { ...state.postProcessConfig, channels: 'stereo', trimSilence: false },
           outputFormat: state.outputFormat,
         });
       } else if (state.inputType === 'audio' && state.selectedFile) {
@@ -322,6 +327,7 @@ export function useOfflineStore() {
           inputBytes: bytes,
           voiceName: state.selectedVoiceName!,
           runtimeParams: runtimeParams(),
+          postProcessConfig: { ...state.postProcessConfig, channels: 'stereo', trimSilence: false },
           outputFormat: state.outputFormat,
         });
       } else {
@@ -330,6 +336,7 @@ export function useOfflineStore() {
           text: state.text.trim(),
           voiceName: state.selectedVoiceName!,
           runtimeParams: runtimeParams(),
+          postProcessConfig: { ...state.postProcessConfig, channels: 'stereo', trimSilence: false },
           outputFormat: state.outputFormat,
         });
       }
@@ -487,6 +494,25 @@ export function useOfflineStore() {
     state.lastMessage = messageForJob(job);
   }
 
+  function setPostProcessDenoise(denoiseMode: DenoiseMode): void {
+    state.postProcessConfig = {
+      ...state.postProcessConfig,
+      denoiseMode,
+      channels: 'stereo',
+      trimSilence: false,
+    };
+  }
+
+  function setPostProcessLufs(targetLufs: number): void {
+    state.postProcessConfig = {
+      ...state.postProcessConfig,
+      targetLufs,
+      loudnessNormalization: true,
+      channels: 'stereo',
+      trimSilence: false,
+    };
+  }
+
   return {
     state,
     selectedVoice,
@@ -508,6 +534,8 @@ export function useOfflineStore() {
     clearHistory,
     deleteJob,
     download,
+    setPostProcessDenoise,
+    setPostProcessLufs,
   };
 }
 

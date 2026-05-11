@@ -1,3 +1,5 @@
+import type { VoicePostProcessConfig } from './voice-separation';
+
 export type RealtimeSessionStatus =
   | 'idle'
   | 'connecting'
@@ -15,6 +17,7 @@ export interface RealtimeSession {
   traceId: string;
   voiceName: string;
   runtimeParams: RuntimeParams;
+  postProcessConfig?: VoicePostProcessConfig | null;
   status: RealtimeSessionStatus;
   websocketUrl: string;
   errorSummary: string | null;
@@ -25,6 +28,7 @@ export interface RealtimeSession {
 export interface CreateRealtimeSessionRequest {
   voiceName: string;
   runtimeParams: RuntimeParams;
+  postProcessConfig?: VoicePostProcessConfig;
 }
 
 export interface RealtimeLedgerEntry {

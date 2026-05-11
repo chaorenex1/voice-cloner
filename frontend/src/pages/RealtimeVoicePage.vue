@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRealtimeStore } from '../stores/realtime.store';
 import { logRealtimeDebug } from '../utils/realtime-debug';
+import type { DenoiseMode } from '../utils/types/voice-separation';
+import { lufsPresetOptions } from '../utils/types/voice-separation';
 
 const realtime = useRealtimeStore();
 const emit = defineEmits<{
@@ -281,6 +283,38 @@ onBeforeUnmount(() => {
             />
             <span>{{ realtime.state.selectedInputFile?.name ?? '选择 WAV 测试音频' }}</span>
           </label>
+        </div>
+
+        <div class="realtime-postprocess-panel" aria-label="实时输出后处理">
+          <label>
+            <span>降噪</span>
+            <select
+              :value="realtime.state.postProcessConfig.denoiseMode"
+              :disabled="realtime.isRunning.value"
+              @change="
+                realtime.setPostProcessDenoise(
+                  ($event.target as HTMLSelectElement).value as DenoiseMode
+                )
+              "
+            >
+              <option value="off">关闭</option>
+              <option value="standard">标准</option>
+              <option value="strong">强</option>
+            </select>
+          </label>
+          <label>
+            <span>响度</span>
+            <select
+              :value="realtime.state.postProcessConfig.targetLufs"
+              :disabled="realtime.isRunning.value"
+              @change="realtime.setPostProcessLufs(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="option in lufsPresetOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <!-- <small>后处理声道默认立体声，开始会话后本次配置锁定。</small> -->
         </div>
 
         <nav class="call-dock" aria-label="通话控制">

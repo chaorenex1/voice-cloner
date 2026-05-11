@@ -926,6 +926,16 @@ button {
   gap: 18px;
 }
 
+.voice-create-postprocess-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.field-muted {
+  opacity: 0.55;
+}
+
 .settings-tabs {
   display: flex;
   gap: 12px;
@@ -1837,6 +1847,39 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.realtime-postprocess-panel {
+  z-index: 1;
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  color: #26384b;
+  font-size: 0.82rem;
+}
+
+.realtime-postprocess-panel label {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid rgba(23, 36, 52, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.realtime-postprocess-panel select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.realtime-postprocess-panel small {
+  color: #667386;
 }
 
 .call-dock {

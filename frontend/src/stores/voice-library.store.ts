@@ -13,6 +13,7 @@ import {
   type CreateCustomVoiceRequest,
   type WavUploadPayload,
 } from '../services/tauri/voice-library';
+import type { VoicePostProcessConfig, VoiceSeparationModel } from '../utils/types/voice-separation';
 import type {
   VoiceDetail,
   VoiceMutationResult,
@@ -50,6 +51,9 @@ export interface CreateVoiceDraft {
   referenceText: string;
   voiceInstruction?: string;
   upload: WavUploadPayload;
+  skipSeparation?: boolean;
+  separationModel?: VoiceSeparationModel;
+  postProcessConfig?: VoicePostProcessConfig;
 }
 
 const state = reactive<VoiceLibraryState>({

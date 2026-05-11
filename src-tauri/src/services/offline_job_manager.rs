@@ -14,7 +14,7 @@ use crate::{
         error::{AppError, AppResult},
         trace::{new_entity_id, TraceId},
     },
-    audio::normalizer::{normalize_wav_bytes, AudioNormalizationConfig},
+    audio::post_processor::AudioPostProcessor,
     clients::funspeech::{
         offline::{transcribe_audio_bytes, transcribe_audio_bytes_async, OfflineEndpoints},
         tts::{synthesize_text, OfflineTtsRequest},
@@ -23,6 +23,7 @@ use crate::{
         offline_job::{OfflineJob, OfflineJobInputType, OfflineJobStatus},
         runtime_params::RuntimeParams,
         settings::AppSettings,
+        voice_separation::VoicePostProcessConfig,
     },
     services::asset_cache::AssetCache,
     storage::json_store::JsonStore,
@@ -43,6 +44,8 @@ pub struct CreateOfflineAudioJobRequest {
     pub voice_name: String,
     #[serde(default)]
     pub runtime_params: RuntimeParams,
+    #[serde(default)]
+    pub post_process_config: Option<VoicePostProcessConfig>,
     pub output_format: Option<String>,
 }
 
@@ -53,6 +56,8 @@ pub struct CreateOfflineTextJobRequest {
     pub voice_name: String,
     #[serde(default)]
     pub runtime_params: RuntimeParams,
+    #[serde(default)]
+    pub post_process_config: Option<VoicePostProcessConfig>,
     pub output_format: Option<String>,
 }
 
@@ -129,6 +134,7 @@ impl OfflineJobManager {
             input_file_name,
             request.voice_name,
             request.runtime_params,
+            request.post_process_config,
             request.output_format,
             settings,
         )
@@ -148,6 +154,7 @@ impl OfflineJobManager {
             None,
             request.voice_name,
             request.runtime_params,
+            request.post_process_config,
             request.output_format,
             settings,
         )
@@ -161,6 +168,7 @@ impl OfflineJobManager {
         input_file_name: Option<String>,
         voice_name: String,
         runtime_params: RuntimeParams,
+        post_process_config: Option<VoicePostProcessConfig>,
         output_format: Option<String>,
         settings: &AppSettings,
     ) -> AppResult<OfflineJob> {
@@ -175,6 +183,7 @@ impl OfflineJobManager {
             input_file_name,
             voice_name,
             runtime_params,
+            post_process_config,
             output_format: normalize_output_format(output_format, &settings.runtime.default_output_format)?,
             status: OfflineJobStatus::Created,
             stage: "created".into(),
@@ -428,13 +437,13 @@ impl OfflineJobManager {
             self.patch_job_and_emit(
                 &running.job_id,
                 |job| {
-                    job.stage = "normalizingAudio".into();
+                    job.stage = "postProcessingAudio".into();
                     job.progress = 89;
                     job.updated_at = Utc::now();
                 },
                 on_update,
             )?;
-            normalize_offline_wav_bytes(audio_bytes)?
+            post_process_offline_wav_bytes(&running.job_id, audio_bytes, running.post_process_config.as_ref())?
         } else {
             audio_bytes.to_vec()
         };
@@ -718,8 +727,15 @@ fn ensure_wav_audio(output_format: &str, audio_bytes: &[u8], content_type: Optio
     )))
 }
 
-fn normalize_offline_wav_bytes(audio_bytes: &[u8]) -> AppResult<Vec<u8>> {
-    normalize_wav_bytes(audio_bytes, AudioNormalizationConfig::default()).map(|(normalized, _report)| normalized)
+fn post_process_offline_wav_bytes(
+    job_id: &str,
+    audio_bytes: &[u8],
+    config: Option<&VoicePostProcessConfig>,
+) -> AppResult<Vec<u8>> {
+    let config = config
+        .cloned()
+        .unwrap_or_else(VoicePostProcessConfig::default_stereo_output);
+    AudioPostProcessor::default().process_wav_bytes(audio_bytes, &config, &format!("offline-{job_id}"))
 }
 
 fn is_wav_bytes(audio_bytes: &[u8]) -> bool {
@@ -911,6 +927,7 @@ mod tests {
                     input_bytes: None,
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("WAV".into()),
                 },
                 &settings,
@@ -923,6 +940,7 @@ mod tests {
                     text: "hello".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: None,
                 },
                 &settings,
@@ -951,6 +969,7 @@ mod tests {
                     input_bytes: Some(b"fake wav".to_vec()),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
@@ -989,6 +1008,7 @@ mod tests {
                     text: "hello".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
@@ -1024,6 +1044,7 @@ mod tests {
                     text: "hello".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
@@ -1063,6 +1084,7 @@ mod tests {
                     input_bytes: Some(b"fake input wav".to_vec()),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
@@ -1075,6 +1097,7 @@ mod tests {
                     text: "keep me".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
@@ -1115,6 +1138,7 @@ mod tests {
                     input_bytes: None,
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
@@ -1164,13 +1188,14 @@ mod tests {
                     text: "hello".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
             )
             .unwrap();
         let completed = manager
-            .complete_with_audio_bytes(&created, &cache, &test_wav_bytes(&[0.2]), &|_| {})
+            .complete_with_audio_bytes(&created, &cache, &test_wav_bytes(&vec![0.2; 1600]), &|_| {})
             .unwrap();
         let old_path = completed.local_artifact_path.clone().unwrap();
 
@@ -1193,20 +1218,24 @@ mod tests {
                     text: "hello".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: Some("wav".into()),
                 },
                 &settings,
             )
             .unwrap();
         manager
-            .complete_with_audio_bytes(&created, &cache, &test_wav_bytes(&[0.2]), &|_| {})
+            .complete_with_audio_bytes(&created, &cache, &test_wav_bytes(&vec![0.2; 1600]), &|_| {})
             .unwrap();
         let target = std::env::temp_dir().join(format!("voice-cloner-download-{}.wav", created.job_id));
 
         let copied = manager.copy_artifact_to(&created.job_id, &target).unwrap();
 
         assert_eq!(copied, target);
-        assert!(wav_peak(&std::fs::read(copied).unwrap()) > 0.88);
+        let copied_bytes = std::fs::read(copied).unwrap();
+        assert!(wav_peak(&copied_bytes) > 0.0);
+        let reader = hound::WavReader::new(std::io::Cursor::new(copied_bytes)).unwrap();
+        assert_eq!(reader.spec().channels, 2);
     }
 
     #[test]
@@ -1235,6 +1264,7 @@ mod tests {
                     text: " ".into(),
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                     output_format: None,
                 },
                 &AppSettings::default(),

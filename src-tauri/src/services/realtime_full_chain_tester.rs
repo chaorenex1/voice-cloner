@@ -140,6 +140,7 @@ pub async fn run_realtime_full_chain_test(
         CreateRealtimeSessionRequest {
             voice_name: voice_name.to_string(),
             runtime_params: request.runtime_params.clone(),
+            post_process_config: None,
         },
         &settings,
     )?;
@@ -618,6 +619,7 @@ mod tests {
             trace_id: "trace-1".into(),
             voice_name: "voice".into(),
             runtime_params: RuntimeParams::default(),
+            post_process_config: None,
             status: RealtimeSessionStatus::Running,
             websocket_url: "ws://localhost:8000/ws/v1/realtime/voice".into(),
             error_summary: None,

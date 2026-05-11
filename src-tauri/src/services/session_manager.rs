@@ -14,6 +14,7 @@ use crate::{
         runtime_params::RuntimeParams,
         session::{RealtimeSession, RealtimeSessionStatus},
         settings::AppSettings,
+        voice_separation::VoicePostProcessConfig,
     },
 };
 
@@ -23,6 +24,8 @@ pub struct CreateRealtimeSessionRequest {
     pub voice_name: String,
     #[serde(default)]
     pub runtime_params: RuntimeParams,
+    #[serde(default)]
+    pub post_process_config: Option<VoicePostProcessConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -61,6 +64,7 @@ impl SessionManager {
             trace_id: TraceId::new("realtime").into_string(),
             voice_name: voice_name.to_string(),
             runtime_params: request.runtime_params,
+            post_process_config: request.post_process_config,
             status: RealtimeSessionStatus::Idle,
             websocket_url: endpoint.websocket_url,
             error_summary: None,
@@ -204,6 +208,7 @@ mod tests {
                 CreateRealtimeSessionRequest {
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                 },
                 &settings,
             )
@@ -251,6 +256,7 @@ mod tests {
                 CreateRealtimeSessionRequest {
                     voice_name: "narrator".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                 },
                 &settings,
             )
@@ -273,6 +279,7 @@ mod tests {
                 CreateRealtimeSessionRequest {
                     voice_name: " ".into(),
                     runtime_params: RuntimeParams::default(),
+                    post_process_config: None,
                 },
                 &AppSettings::default(),
             )

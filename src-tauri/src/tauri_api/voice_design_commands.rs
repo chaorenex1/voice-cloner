@@ -8,7 +8,11 @@ use crate::{
         state::AppState,
     },
     clients::funspeech::offline::transcribe_wav_bytes,
-    domain::{voice::CustomVoiceProfile, voice_design::VoiceDesignDraft},
+    domain::{
+        voice::CustomVoiceProfile,
+        voice_design::VoiceDesignDraft,
+        voice_separation::{VoicePostProcessConfig, VoiceSeparationModel},
+    },
     services::voice_design_manager::{
         CompleteVoiceDesignAsrRequest, CompleteVoiceDesignPreviewRequest, CompleteVoiceInstructionRequest,
         CreateVoiceDesignDraftRequest, FailVoiceDesignDraftRequest, SaveVoiceDesignDraftRequest,
@@ -23,6 +27,12 @@ pub struct SaveCustomVoiceProfileRequest {
     pub reference_text: String,
     pub reference_audio_file_name: Option<String>,
     pub reference_audio_bytes: Option<Vec<u8>>,
+    #[serde(default = "default_skip_separation")]
+    pub skip_separation: bool,
+    #[serde(default)]
+    pub separation_model: Option<VoiceSeparationModel>,
+    #[serde(default)]
+    pub post_process_config: Option<VoicePostProcessConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -189,6 +199,44 @@ pub fn save_custom_voice_profile(
     state: State<'_, AppState>,
     request: SaveCustomVoiceProfileRequest,
 ) -> ApiResult<CustomVoiceProfileView> {
+    if !request.skip_separation {
+        let file_name = request.reference_audio_file_name.as_deref().unwrap_or("reference.wav");
+        let audio_bytes = request.reference_audio_bytes.as_deref().ok_or_else(|| {
+            ApiError::from(crate::app::error::AppError::offline_job(
+                "referenceAudioBytes is required when voice separation is enabled",
+            ))
+        })?;
+        let source_path = write_voice_create_source(file_name, audio_bytes).map_err(ApiError::from)?;
+        let created = state
+            .voice_separation()
+            .create_job(
+                crate::services::voice_separation_manager::CreateVoiceSeparationJobRequest {
+                    source_path: source_path.to_string_lossy().into_owned(),
+                    model: request.separation_model,
+                    post_process_config: request.post_process_config.clone(),
+                },
+            )
+            .map_err(ApiError::from)?;
+        state
+            .voice_separation()
+            .start_job(&created.job_id, request.post_process_config)
+            .map_err(ApiError::from)?;
+        let saved = state
+            .voice_separation()
+            .save_as_custom_voice(
+                &created.job_id,
+                crate::services::voice_separation_manager::SaveSeparatedVocalsRequest {
+                    voice_name: request.voice_name,
+                    reference_text: request.reference_text,
+                    voice_instruction: Some(request.voice_instruction),
+                },
+                state.voice_library(),
+            )
+            .map_err(ApiError::from)?;
+        let _ = std::fs::remove_file(source_path);
+        return Ok(profile_view(saved));
+    }
+
     let wav_upload = request.reference_audio_bytes.as_deref().map(|bytes| {
         (
             request.reference_audio_file_name.as_deref().unwrap_or("reference.wav"),
@@ -203,9 +251,37 @@ pub fn save_custom_voice_profile(
             request.voice_instruction,
             request.reference_text,
             wav_upload,
+            request.post_process_config,
         )
         .map(profile_view)
         .map_err(Into::into)
+}
+
+fn default_skip_separation() -> bool {
+    true
+}
+
+fn write_voice_create_source(file_name: &str, bytes: &[u8]) -> crate::app::error::AppResult<std::path::PathBuf> {
+    let extension = std::path::Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.trim().is_empty())
+        .unwrap_or("wav");
+    let safe_extension: String = extension.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect();
+    let safe_extension = if safe_extension.is_empty() {
+        "wav".to_string()
+    } else {
+        safe_extension
+    };
+    let source_path = std::env::temp_dir().join(format!(
+        "voice-cloner-create-{}-{}.{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        safe_extension
+    ));
+    std::fs::write(&source_path, bytes)
+        .map_err(|source| crate::app::error::AppError::io("writing temporary voice source", source))?;
+    Ok(source_path)
 }
 
 fn profile_view(profile: CustomVoiceProfile) -> CustomVoiceProfileView {

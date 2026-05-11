@@ -5,6 +5,12 @@ import VoiceLibraryRail from '../components/voice/VoiceLibraryRail.vue';
 import VoiceLibraryToolbar from '../components/voice/VoiceLibraryToolbar.vue';
 import { useVoiceLibraryStore } from '../stores/voice-library.store';
 import type { WavUploadPayload } from '../services/tauri/voice-library';
+import type {
+  DenoiseMode,
+  VoicePostProcessConfig,
+  VoiceSeparationModel,
+} from '../utils/types/voice-separation';
+import { defaultPostProcessConfig, lufsPresetOptions } from '../utils/types/voice-separation';
 
 const {
   state,
@@ -27,10 +33,16 @@ const draft = reactive<{
   displayName: string;
   referenceText: string;
   upload: WavUploadPayload | null;
+  skipSeparation: boolean;
+  separationModel: VoiceSeparationModel;
+  postProcessConfig: VoicePostProcessConfig;
 }>({
   displayName: '',
   referenceText: '',
   upload: null,
+  skipSeparation: true,
+  separationModel: 'htDemucs',
+  postProcessConfig: { ...defaultPostProcessConfig },
 });
 
 const operationTitle = computed(() => {
@@ -81,17 +93,25 @@ async function submitDraft(): Promise<void> {
     referenceText: draft.referenceText,
     voiceInstruction: '',
     upload: draft.upload,
+    skipSeparation: draft.skipSeparation,
+    separationModel: draft.skipSeparation ? undefined : draft.separationModel,
+    postProcessConfig: { ...draft.postProcessConfig, trimSilence: false },
   });
   draft.displayName = '';
   draft.referenceText = '';
   draft.upload = null;
+  draft.skipSeparation = true;
+  draft.separationModel = 'htDemucs';
+  draft.postProcessConfig = { ...defaultPostProcessConfig };
   isCreating.value = false;
 }
 
-async function pickWavFile(): Promise<WavUploadPayload | null> {
+async function pickWavFile(allowSeparationSource = false): Promise<WavUploadPayload | null> {
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.wav,audio/wav,audio/x-wav';
+  input.accept = allowSeparationSource && !draft.skipSeparation
+    ? '.wav,.mp3,.flac,.m4a,.mp4,.mov,audio/*,video/*'
+    : '.wav,audio/wav,audio/x-wav';
   return new Promise((resolve) => {
     input.onchange = async () => {
       const file = input.files?.[0];
@@ -99,7 +119,7 @@ async function pickWavFile(): Promise<WavUploadPayload | null> {
         resolve(null);
         return;
       }
-      if (!file.name.toLowerCase().endsWith('.wav')) {
+      if ((!allowSeparationSource || draft.skipSeparation) && !file.name.toLowerCase().endsWith('.wav')) {
         state.lastMessage = '参考音频只允许选择 wav 文件';
         resolve(null);
         return;
@@ -117,18 +137,33 @@ async function pickWavFile(): Promise<WavUploadPayload | null> {
 }
 
 async function chooseDraftAudio(): Promise<void> {
-  draft.upload = await pickWavFile();
+  draft.upload = await pickWavFile(true);
   if (draft.upload) {
-    state.lastMessage = `已选择 wav 参考音频：${draft.upload.fileName}`;
-    const text = await recognizeReferenceAudio(draft.upload);
+    state.lastMessage = `已选择参考素材：${draft.upload.fileName}`;
+    const text = draft.upload.fileName.toLowerCase().endsWith('.wav')
+      ? await recognizeReferenceAudio(draft.upload)
+      : null;
     if (text) {
       draft.referenceText = text;
     }
   }
 }
 
+function updateDraftDenoise(denoiseMode: DenoiseMode): void {
+  draft.postProcessConfig = { ...draft.postProcessConfig, denoiseMode, trimSilence: false };
+}
+
+function updateDraftLufs(targetLufs: number): void {
+  draft.postProcessConfig = {
+    ...draft.postProcessConfig,
+    targetLufs,
+    loudnessNormalization: true,
+    trimSilence: false,
+  };
+}
+
 async function chooseDetailAudio(): Promise<void> {
-  const upload = await pickWavFile();
+  const upload = await pickWavFile(false);
   if (upload) {
     attachReferenceAudio(upload);
     const text = await recognizeReferenceAudio(upload);
@@ -221,7 +256,7 @@ async function refreshCloudRuntime(): Promise<void> {
           <div>
             <p class="module-eyebrow">参考音频 *</p>
             <strong>{{ draft.upload?.fileName ?? '尚未选择 wav 文件' }}</strong>
-            <span>文件会保存到 ~/voice-cloner/library/custom-voices/。</span>
+            <span>文件会先按下方选项后处理，再保存到自定义音色库。</span>
           </div>
           <button
             class="ghost-button"
@@ -243,6 +278,48 @@ async function refreshCloudRuntime(): Promise<void> {
                   : '选择 wav'
             }}
           </button>
+        </div>
+
+        <div class="voice-create-postprocess-grid">
+          <label class="form-field">
+            <span>处理方式</span>
+            <select v-model="draft.skipSeparation">
+              <option :value="true">跳过分离，直接清洗参考音频</option>
+              <option :value="false">先做人声分离，再清洗 vocals</option>
+            </select>
+          </label>
+
+          <label class="form-field" :class="{ 'field-muted': draft.skipSeparation }">
+            <span>分离模型</span>
+            <select v-model="draft.separationModel" :disabled="draft.skipSeparation">
+              <option value="htDemucs">HTDemucs</option>
+              <option value="htDemucsFt">HTDemucs FT</option>
+            </select>
+          </label>
+
+          <label class="form-field">
+            <span>降噪</span>
+            <select
+              :value="draft.postProcessConfig.denoiseMode"
+              @change="updateDraftDenoise(($event.target as HTMLSelectElement).value as DenoiseMode)"
+            >
+              <option value="off">关闭</option>
+              <option value="standard">标准</option>
+              <option value="strong">强</option>
+            </select>
+          </label>
+
+          <label class="form-field">
+            <span>响度</span>
+            <select
+              :value="draft.postProcessConfig.targetLufs"
+              @change="updateDraftLufs(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="option in lufsPresetOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
         </div>
 
         <button

@@ -145,3 +145,8 @@ export const defaultPostProcessConfig: VoicePostProcessConfig = {
   truePeakDb: -1.5,
   peakLimiter: true,
 };
+
+export const defaultStereoPostProcessConfig: VoicePostProcessConfig = {
+  ...defaultPostProcessConfig,
+  channels: 'stereo',
+};

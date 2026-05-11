@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::runtime_params::RuntimeParams;
+use super::{runtime_params::RuntimeParams, voice_separation::VoicePostProcessConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +31,8 @@ pub struct OfflineJob {
     pub input_file_name: Option<String>,
     pub voice_name: String,
     pub runtime_params: RuntimeParams,
+    #[serde(default)]
+    pub post_process_config: Option<VoicePostProcessConfig>,
     pub output_format: String,
     pub status: OfflineJobStatus,
     #[serde(default = "default_stage")]

@@ -7,9 +7,13 @@ use chrono::Utc;
 
 use crate::{
     app::error::{AppError, AppResult},
-    audio::normalizer::{normalize_wav_file_in_place, AudioNormalizationConfig},
+    audio::{
+        normalizer::{normalize_wav_file_in_place, AudioNormalizationConfig},
+        post_processor::AudioPostProcessor,
+    },
     domain::{
         voice::{CustomVoiceProfile, SyncStatus},
+        voice_separation::VoicePostProcessConfig,
         voice_sync::RemoteVoiceInfo,
     },
     storage::json_store::JsonStore,
@@ -85,6 +89,7 @@ impl VoiceLibrary {
         voice_instruction: String,
         reference_text: String,
         wav_upload: Option<(&str, &[u8])>,
+        post_process_config: Option<VoicePostProcessConfig>,
     ) -> AppResult<CustomVoiceProfile> {
         let voice_name = require_voice_name(voice_name)?;
         let now = Utc::now();
@@ -107,7 +112,12 @@ impl VoiceLibrary {
         profile.reference_text = reference_text;
 
         if let Some((wav_file_name, wav_bytes)) = wav_upload {
-            return self.save_custom_voice_wav_bytes(profile, wav_file_name, wav_bytes);
+            return match post_process_config {
+                Some(config) => {
+                    self.save_custom_voice_wav_bytes_with_post_process(profile, wav_file_name, wav_bytes, &config)
+                }
+                None => self.save_custom_voice_wav_bytes(profile, wav_file_name, wav_bytes),
+            };
         }
 
         if profile.reference_audio_path.trim().is_empty() {
@@ -117,6 +127,38 @@ impl VoiceLibrary {
         }
 
         profile.sync_status = SyncStatus::PendingSync;
+        self.write_profile(profile)
+    }
+
+    pub fn save_custom_voice_wav_bytes_with_post_process(
+        &self,
+        mut profile: CustomVoiceProfile,
+        wav_file_name: &str,
+        wav_bytes: &[u8],
+        post_process_config: &VoicePostProcessConfig,
+    ) -> AppResult<CustomVoiceProfile> {
+        require_wav_file_name(wav_file_name)?;
+        if wav_bytes.is_empty() {
+            return Err(AppError::offline_job("referenceAudioBytes is required"));
+        }
+        let voice_name = require_voice_name(&profile.voice_name)?;
+        profile.voice_name = voice_name.clone();
+        profile.sync_status = SyncStatus::PendingSync;
+        if profile.created_at.timestamp_millis() == 0 {
+            profile.created_at = Utc::now();
+        }
+        let previous_audio_path = profile.reference_audio_path.clone();
+        let processed = AudioPostProcessor::default().process_wav_bytes(
+            wav_bytes,
+            post_process_config,
+            &format!("custom-voice-{}", sanitize_voice_name(&voice_name)),
+        )?;
+        let target_path = self.generated_audio_path()?;
+        std::fs::write(&target_path, processed)
+            .map_err(|source| AppError::io("writing post-processed custom voice wav", source))?;
+        validate_reference_audio_or_cleanup(&target_path)?;
+        remove_file_if_present(&previous_audio_path, Some(&target_path))?;
+        profile.reference_audio_path = target_path.to_string_lossy().into_owned();
         self.write_profile(profile)
     }
 
@@ -472,7 +514,13 @@ mod tests {
         let saved = library.save_custom_voice(profile()).unwrap();
 
         let updated = library
-            .save_custom_voice_fields("My Voice", "brighter".into(), "updated reference text".into(), None)
+            .save_custom_voice_fields(
+                "My Voice",
+                "brighter".into(),
+                "updated reference text".into(),
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(updated.voice_instruction, "brighter");
@@ -509,6 +557,7 @@ mod tests {
                 "brighter".into(),
                 "new text".into(),
                 Some(("new-reference.wav", &wav_bytes(&[0.2]))),
+                None,
             )
             .unwrap();
 

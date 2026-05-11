@@ -2,6 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useOfflineStore } from '../stores/offline.store';
 import type { OfflineJob } from '../utils/types/offline';
+import type { DenoiseMode } from '../utils/types/voice-separation';
+import { lufsPresetOptions } from '../utils/types/voice-separation';
 
 const offline = useOfflineStore();
 const INITIAL_HISTORY_COUNT = 8;
@@ -225,6 +227,34 @@ function stageLabel(stage: string): string {
               </option>
             </select>
             <span>{{ offline.selectedEmotion.value?.label ?? '默认' }}</span>
+          </label>
+          <label>
+            降噪
+            <select
+              :value="offline.state.postProcessConfig.denoiseMode"
+              @change="
+                offline.setPostProcessDenoise(
+                  ($event.target as HTMLSelectElement).value as DenoiseMode
+                )
+              "
+            >
+              <option value="off">关闭</option>
+              <option value="standard">标准</option>
+              <option value="strong">强</option>
+            </select>
+            <!-- <span>{{ offline.state.postProcessConfig.denoiseMode }}</span> -->
+          </label>
+          <label>
+            响度
+            <select
+              :value="offline.state.postProcessConfig.targetLufs"
+              @change="offline.setPostProcessLufs(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="option in lufsPresetOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <!-- <span>立体声输出</span> -->
           </label>
         </div>
 

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hound::WavReader;
 
@@ -36,8 +36,7 @@ impl AudioPostProcessor {
     ) -> AppResult<AudioPostProcessReport> {
         validate_config(config)?;
         let input_metrics = wav_metrics(input)?;
-        self.ffmpeg
-            .post_process_vocals(input, output, config, ffmpeg_log_path)?;
+        self.ffmpeg.post_process_audio(input, output, config, ffmpeg_log_path)?;
         let output_metrics = wav_metrics(output)?;
         let mut warnings: Vec<String> = Vec::new();
         if output_metrics.sample_count == 0 {
@@ -90,6 +89,74 @@ impl AudioPostProcessor {
             .map_err(|source| AppError::json("serializing post-process report", source))?;
         std::fs::write(report_path, json).map_err(|source| AppError::io("writing post-process report", source))?;
         Ok(report)
+    }
+
+    pub fn process_wav_bytes(
+        &self,
+        audio_bytes: &[u8],
+        config: &VoicePostProcessConfig,
+        work_prefix: &str,
+    ) -> AppResult<Vec<u8>> {
+        let paths = TempPostProcessPaths::new(work_prefix);
+        if let Some(parent) = paths.input.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|source| AppError::io("creating temporary post-process directory", source))?;
+        }
+        std::fs::write(&paths.input, audio_bytes)
+            .map_err(|source| AppError::io("writing temporary post-process input", source))?;
+        let result = self
+            .process(&paths.input, &paths.output, config, &paths.log, &paths.report)
+            .and_then(|_| {
+                std::fs::read(&paths.output)
+                    .map_err(|source| AppError::io("reading temporary post-process output", source))
+            });
+        paths.cleanup();
+        result
+    }
+}
+
+#[derive(Debug)]
+struct TempPostProcessPaths {
+    input: PathBuf,
+    output: PathBuf,
+    log: PathBuf,
+    report: PathBuf,
+}
+
+impl TempPostProcessPaths {
+    fn new(prefix: &str) -> Self {
+        let safe_prefix = sanitize_temp_prefix(prefix);
+        let unique = format!(
+            "{}-{}-{}",
+            safe_prefix,
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let root = std::env::temp_dir().join("voice-cloner-post-process").join(unique);
+        Self {
+            input: root.join("input.wav"),
+            output: root.join("output.wav"),
+            log: root.join("ffmpeg.log"),
+            report: root.join("report.json"),
+        }
+    }
+
+    fn cleanup(&self) {
+        if let Some(root) = self.input.parent() {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+fn sanitize_temp_prefix(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    if sanitized.is_empty() {
+        "audio".into()
+    } else {
+        sanitized
     }
 }
 
