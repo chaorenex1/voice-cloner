@@ -28,17 +28,14 @@ pub fn build_app_state() -> AppResult<AppState> {
     AppState::new(AppPaths::discover()?)
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     initialize_tracing();
     let state = build_app_state().expect("failed to initialize voice-cloner runtime state");
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            desktop::window_manager::setup(app)?;
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             tauri_api::app_commands::get_app_summary,
             tauri_api::app_commands::get_app_runtime_info,
@@ -105,7 +102,15 @@ pub fn run() {
             tauri_api::voice_sync_commands::refresh_voice_runtime,
             tauri_api::voice_sync_commands::fail_voice_sync,
             tauri_api::voice_sync_commands::list_voice_sync_reports,
-        ])
+        ]);
+
+    #[cfg(not(mobile))]
+    let builder = builder.setup(|app| {
+        desktop::window_manager::setup(app)?;
+        Ok(())
+    });
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
