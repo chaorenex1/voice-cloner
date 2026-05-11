@@ -12,6 +12,7 @@ const {
   updateDeviceSettings,
   updateBackendSettings,
   updateFunSpeechSettings,
+  updateMcpSettings,
   updateRuntimeSettings,
   saveSettings,
 } = useSettingsStore();
@@ -47,7 +48,7 @@ watch(() => props.returnTarget, ensureDeviceSectionForReturn);
       <div>
         <p class="module-eyebrow">Settings</p>
         <!-- <h2>{{ activeTitle }}</h2> -->
-        <p class="module-description">管理音频设备、虚拟麦克风、FunSpeech 和 LLM 后端连接。</p>
+        <p class="module-description">管理音频设备、虚拟麦克风、FunSpeech、LLM 和 MCP 后端能力。</p>
       </div>
       <button
         v-if="returnTarget === 'realtime'"
@@ -110,6 +111,7 @@ watch(() => props.returnTarget, ensureDeviceSectionForReturn);
       :settings="state.settings?.backend ?? null"
       @update="updateBackendSettings"
       @update-fun-speech="updateFunSpeechSettings"
+      @update-mcp="updateMcpSettings"
       @commit="saveSettings"
     />
   </section>

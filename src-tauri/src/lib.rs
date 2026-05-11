@@ -9,6 +9,7 @@ pub mod tauri_api;
 
 use app::{error::AppResult, state::AppState};
 use storage::app_paths::AppPaths;
+use tauri::Manager;
 
 fn initialize_tracing() {
     let default_filter = if cfg!(debug_assertions) {
@@ -119,6 +120,9 @@ pub fn run() {
     #[cfg(not(mobile))]
     let builder = builder.setup(|app| {
         desktop::window_manager::setup(app)?;
+        let state = app.state::<AppState>();
+        let settings = state.settings().load_or_default()?;
+        state.mcp_server().apply_settings(&settings.backend.mcp)?;
         Ok(())
     });
 

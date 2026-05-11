@@ -14,6 +14,46 @@ pub struct BackendConfig {
     pub extra_options: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub path: String,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "127.0.0.1".into(),
+            port: 8765,
+            path: "/mcp".into(),
+        }
+    }
+}
+
+impl McpSettings {
+    pub fn endpoint_url(&self) -> String {
+        format!("http://{}:{}{}", self.host, self.port, self.path)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.host.trim() != "127.0.0.1" && self.host.trim() != "localhost" {
+            return Err("backend.mcp.host must be 127.0.0.1 or localhost".into());
+        }
+        if self.port == 0 {
+            return Err("backend.mcp.port must be greater than 0".into());
+        }
+        if !self.path.starts_with('/') || self.path.contains("//") || self.path.trim().len() <= 1 {
+            return Err("backend.mcp.path must be an absolute HTTP path such as /mcp".into());
+        }
+        Ok(())
+    }
+}
+
 impl BackendConfig {
     pub fn local_llm_default() -> Self {
         Self {
@@ -81,6 +121,8 @@ pub struct BackendSettings {
     pub asr: BackendConfig,
     pub tts: BackendConfig,
     pub realtime: BackendConfig,
+    #[serde(default)]
+    pub mcp: McpSettings,
 }
 
 impl Default for BackendSettings {
@@ -90,6 +132,7 @@ impl Default for BackendSettings {
             asr: BackendConfig::funspeech_default(),
             tts: BackendConfig::funspeech_default(),
             realtime: BackendConfig::funspeech_default(),
+            mcp: McpSettings::default(),
         }
     }
 }
@@ -155,6 +198,7 @@ impl AppSettings {
         self.backend.asr.validate("backend.asr")?;
         self.backend.tts.validate("backend.tts")?;
         self.backend.realtime.validate("backend.realtime")?;
+        self.backend.mcp.validate()?;
 
         if self.runtime.default_output_format.trim().is_empty() {
             return Err("runtime.defaultOutputFormat is required".into());
@@ -186,6 +230,7 @@ pub struct BackendSettingsPatch {
     pub asr: Option<BackendConfig>,
     pub tts: Option<BackendConfig>,
     pub realtime: Option<BackendConfig>,
+    pub mcp: Option<McpSettings>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -240,6 +285,9 @@ impl AppSettingsPatch {
             if let Some(realtime) = backend.realtime {
                 settings.backend.realtime = realtime;
             }
+            if let Some(mcp) = backend.mcp {
+                settings.backend.mcp = mcp;
+            }
         }
 
         if let Some(runtime) = self.runtime {
@@ -281,6 +329,8 @@ mod tests {
             settings.runtime.realtime_voice_mode,
             super::RealtimeVoiceMode::RealtimeVoice
         );
+        assert!(!settings.backend.mcp.enabled);
+        assert_eq!(settings.backend.mcp.endpoint_url(), "http://127.0.0.1:8765/mcp");
         assert!(!settings.runtime.realtime_playback_ack_enabled);
         assert!(settings.validate().is_ok());
     }
@@ -317,6 +367,14 @@ mod tests {
         settings.backend.realtime.base_url = "localhost:8000".into();
 
         assert!(settings.validate().unwrap_err().contains("baseUrl"));
+    }
+
+    #[test]
+    fn settings_validation_rejects_public_mcp_host() {
+        let mut settings = AppSettings::default();
+        settings.backend.mcp.host = "0.0.0.0".into();
+
+        assert!(settings.validate().unwrap_err().contains("backend.mcp.host"));
     }
 
     #[test]

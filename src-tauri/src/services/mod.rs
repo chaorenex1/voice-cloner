@@ -1,4 +1,5 @@
 pub mod asset_cache;
+pub mod mcp_server_manager;
 pub mod offline_job_manager;
 pub mod realtime_full_chain_tester;
 pub mod realtime_stream_manager;

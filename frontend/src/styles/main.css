@@ -972,6 +972,56 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.backend-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.backend-settings-card {
+  display: grid;
+  gap: 22px;
+}
+
+.backend-settings-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid rgba(21, 35, 52, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.backend-settings-group__heading,
+.backend-mcp-endpoint {
+  grid-column: 1 / -1;
+}
+
+.backend-settings-group__heading {
+  display: grid;
+  gap: 4px;
+}
+
+.backend-settings-group__heading strong {
+  color: #172434;
+  font-size: 1rem;
+  font-weight: 840;
+}
+
+.backend-settings-group__heading span,
+.backend-mcp-endpoint {
+  color: #667386;
+  font-size: 0.86rem;
+}
+
+.backend-settings-group--mcp {
+  background: linear-gradient(135deg, rgba(232, 248, 221, 0.52), rgba(255, 255, 255, 0.74));
+}
+
+.backend-mcp-endpoint {
+  margin: 0;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
 .settings-card {
   padding: 24px;
 }
@@ -2154,6 +2204,7 @@ button {
   .realtime-workspace,
   .call-layout,
   .backend-grid,
+  .backend-settings-group,
   .form-grid {
     grid-template-columns: 1fr;
   }

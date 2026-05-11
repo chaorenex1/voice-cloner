@@ -48,6 +48,12 @@ const mockSettings: AppSettings = {
       region: null,
       extraOptions: {},
     },
+    mcp: {
+      enabled: false,
+      host: '127.0.0.1',
+      port: 8765,
+      path: '/mcp',
+    },
   },
   runtime: {
     defaultOutputFormat: 'wav',

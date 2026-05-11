@@ -6,11 +6,16 @@ import type {
   BackendEndpointConfig,
   BackendSettings,
   DeviceSettings,
+  McpSettings,
   RuntimeSettings,
   SettingsSection,
 } from '../utils/types/settings';
 
-const funSpeechKeys: Array<Exclude<keyof BackendSettings, 'llm'>> = ['asr', 'tts', 'realtime'];
+const funSpeechKeys: Array<Exclude<keyof BackendSettings, 'llm' | 'mcp'>> = [
+  'asr',
+  'tts',
+  'realtime',
+];
 
 export interface SettingsState {
   settings: AppSettings | null;
@@ -102,6 +107,21 @@ export function useSettingsStore() {
     dirtyRevision += 1;
   }
 
+  function updateMcpSettings(patch: Partial<McpSettings>): void {
+    if (!state.settings) {
+      return;
+    }
+
+    state.settings = {
+      ...state.settings,
+      backend: {
+        ...state.settings.backend,
+        mcp: { ...state.settings.backend.mcp, ...patch },
+      },
+    };
+    dirtyRevision += 1;
+  }
+
   function updateRuntimeSettings(patch: Partial<RuntimeSettings>): void {
     if (!state.settings) {
       return;
@@ -144,6 +164,7 @@ export function useSettingsStore() {
     updateDeviceSettings,
     updateBackendSettings,
     updateFunSpeechSettings,
+    updateMcpSettings,
     updateRuntimeSettings,
     saveSettings,
   };

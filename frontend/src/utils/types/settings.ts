@@ -35,11 +35,19 @@ export interface BackendEndpointConfig {
   extraOptions: Record<string, string>;
 }
 
+export interface McpSettings {
+  enabled: boolean;
+  host: string;
+  port: number;
+  path: string;
+}
+
 export interface BackendSettings {
   llm: BackendEndpointConfig;
   asr: BackendEndpointConfig;
   tts: BackendEndpointConfig;
   realtime: BackendEndpointConfig;
+  mcp: McpSettings;
 }
 
 export interface RuntimeSettings {

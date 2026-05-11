@@ -18,7 +18,7 @@ const sections: Array<{ key: SettingsSection; label: string; description: string
   {
     key: 'backends',
     label: '后端设置',
-    description: 'FunSpeech 与 LLM 连接',
+    description: 'LLM、FunSpeech 与 MCP',
   },
 ];
 </script>

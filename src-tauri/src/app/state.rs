@@ -6,7 +6,7 @@ use crate::{
         virtual_mic::SelectableVirtualMicAdapter,
     },
     services::{
-        asset_cache::AssetCache, offline_job_manager::OfflineJobManager,
+        asset_cache::AssetCache, mcp_server_manager::McpServerManager, offline_job_manager::OfflineJobManager,
         realtime_stream_manager::RealtimeStreamManager, session_manager::SessionManager,
         settings_manager::SettingsManager, voice_design_manager::VoiceDesignManager, voice_library::VoiceLibrary,
         voice_separation_manager::VoiceSeparationManager, voice_sync_manager::VoiceSyncManager,
@@ -30,6 +30,7 @@ pub struct AppState {
     voice_separation: Arc<VoiceSeparationManager>,
     voice_library: Arc<VoiceLibrary>,
     voice_sync: Arc<VoiceSyncManager>,
+    mcp_server: Arc<McpServerManager>,
 }
 
 impl AppState {
@@ -48,23 +49,33 @@ impl AppState {
         let virtual_mic = SelectableVirtualMicAdapter::default();
         virtual_mic.set_target_device_id(loaded_settings.device.virtual_mic_device_id.clone());
         voice_sync.load_or_default()?;
-        let offline_jobs = OfflineJobManager::new(paths.offline_jobs_file())?;
+        let settings = Arc::new(settings);
+        let asset_cache = Arc::new(asset_cache);
+        let voice_separation = Arc::new(voice_separation);
+        let offline_jobs = Arc::new(OfflineJobManager::new(paths.offline_jobs_file())?);
+        let mcp_server = McpServerManager::new(
+            Arc::clone(&settings),
+            Arc::clone(&offline_jobs),
+            Arc::clone(&asset_cache),
+            Arc::clone(&voice_separation),
+        );
 
         Ok(Self {
             paths,
-            settings: Arc::new(settings),
+            settings,
             audio_devices: Arc::new(AudioDeviceManager::default()),
             audio_engine: Arc::new(AudioEngine::default()),
             voice_preview: Arc::new(VoicePreviewPlayer::default()),
             virtual_mic: Arc::new(virtual_mic),
             realtime_streams: Arc::new(RealtimeStreamManager::default()),
             sessions: Arc::new(SessionManager::default()),
-            offline_jobs: Arc::new(offline_jobs),
-            asset_cache: Arc::new(asset_cache),
+            offline_jobs,
+            asset_cache,
             voice_design: Arc::new(VoiceDesignManager::default()),
-            voice_separation: Arc::new(voice_separation),
+            voice_separation,
             voice_library: Arc::new(voice_library),
             voice_sync: Arc::new(voice_sync),
+            mcp_server: Arc::new(mcp_server),
         })
     }
 
@@ -126,5 +137,9 @@ impl AppState {
 
     pub fn voice_sync(&self) -> &VoiceSyncManager {
         &self.voice_sync
+    }
+
+    pub fn mcp_server(&self) -> &McpServerManager {
+        &self.mcp_server
     }
 }

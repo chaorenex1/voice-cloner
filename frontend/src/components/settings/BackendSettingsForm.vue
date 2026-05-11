@@ -3,9 +3,10 @@ import type {
   AppSettings,
   BackendEndpointConfig,
   BackendSettings,
+  McpSettings,
 } from '../../utils/types/settings';
 
-type BackendKey = keyof BackendSettings;
+type BackendKey = Exclude<keyof BackendSettings, 'mcp'>;
 
 defineProps<{
   settings: AppSettings['backend'] | null;
@@ -14,6 +15,7 @@ defineProps<{
 defineEmits<{
   update: [key: BackendKey, patch: Partial<BackendEndpointConfig>];
   updateFunSpeech: [patch: Partial<BackendEndpointConfig>];
+  updateMcp: [patch: Partial<McpSettings>];
   commit: [];
 }>();
 
@@ -28,16 +30,20 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
 </script>
 
 <template>
-  <div v-if="settings" class="backend-grid">
-    <section class="settings-card">
+  <div v-if="settings" class="backend-grid backend-grid--single">
+    <section class="settings-card backend-settings-card">
       <div class="settings-card__header">
-        <p class="module-eyebrow">LLM Backend</p>
-        <span>用于提示词生成、文案改写与语音设计辅助。</span>
+        <p class="module-eyebrow">Backend Services</p>
+        <span>集中配置 LLM、FunSpeech 与本机 MCP Streamable HTTP 服务。</span>
       </div>
 
-      <div class="settings-form">
+      <div class="backend-settings-group">
+        <div class="backend-settings-group__heading">
+          <strong>LLM</strong>
+          <span>用于提示词生成、文案改写与语音设计辅助。</span>
+        </div>
         <label class="form-field">
-          <span>Base URL</span>
+          <span>LLM Base URL</span>
           <input
             :value="settings.llm.baseUrl"
             @input="
@@ -50,7 +56,7 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
         </label>
 
         <label class="form-field">
-          <span>Model</span>
+          <span>LLM Model</span>
           <input
             :value="settings.llm.model ?? ''"
             @input="
@@ -63,7 +69,7 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
         </label>
 
         <label class="form-field">
-          <span>API Key Ref</span>
+          <span>LLM API Key Ref</span>
           <input
             :value="settings.llm.apiKeyRef ?? ''"
             @input="
@@ -76,7 +82,7 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
         </label>
 
         <label class="form-field">
-          <span>Timeout(ms)</span>
+          <span>LLM Timeout(ms)</span>
           <input
             :value="settings.llm.timeoutMs"
             inputmode="numeric"
@@ -89,17 +95,14 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
           />
         </label>
       </div>
-    </section>
 
-    <section class="settings-card">
-      <div class="settings-card__header">
-        <p class="module-eyebrow">FunSpeech Backend</p>
-        <span>统一配置 ASR、TTS 与实时变声连接；FunSpeech 不设置模型。</span>
-      </div>
-
-      <div class="settings-form">
+      <div class="backend-settings-group">
+        <div class="backend-settings-group__heading">
+          <strong>FunSpeech</strong>
+          <span>统一配置 ASR、TTS 与实时变声连接；FunSpeech 不设置模型。</span>
+        </div>
         <label class="form-field">
-          <span>Base URL</span>
+          <span>FunSpeech Base URL</span>
           <input
             :value="funSpeechConfig(settings).baseUrl"
             @input="
@@ -112,7 +115,7 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
         </label>
 
         <label class="form-field">
-          <span>API Key Ref</span>
+          <span>FunSpeech API Key Ref</span>
           <input
             :value="funSpeechConfig(settings).apiKeyRef ?? ''"
             @input="
@@ -125,7 +128,7 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
         </label>
 
         <label class="form-field">
-          <span>Timeout(ms)</span>
+          <span>FunSpeech Timeout(ms)</span>
           <input
             :value="funSpeechConfig(settings).timeoutMs"
             inputmode="numeric"
@@ -137,6 +140,72 @@ function funSpeechConfig(settings: AppSettings['backend']): BackendEndpointConfi
             @blur="$emit('commit')"
           />
         </label>
+      </div>
+
+      <div class="backend-settings-group backend-settings-group--mcp">
+        <div class="backend-settings-group__heading">
+          <strong>MCP</strong>
+          <span>Streamable HTTP 服务，暴露离线变声、人声分离、结果资源与使用说明。</span>
+        </div>
+
+        <label class="toggle-field form-field--wide">
+          <input
+            :checked="settings.mcp.enabled"
+            type="checkbox"
+            @change="
+              $emit('updateMcp', {
+                enabled: ($event.target as HTMLInputElement).checked,
+              });
+              $emit('commit');
+            "
+          />
+          <span>启用 MCP Streamable HTTP 服务</span>
+        </label>
+
+        <label class="form-field">
+          <span>MCP Host</span>
+          <input
+            :value="settings.mcp.host"
+            @input="
+              $emit('updateMcp', {
+                host: ($event.target as HTMLInputElement).value,
+              })
+            "
+            @blur="$emit('commit')"
+          />
+          <small>仅允许 127.0.0.1 或 localhost。</small>
+        </label>
+
+        <label class="form-field">
+          <span>MCP Port</span>
+          <input
+            :value="settings.mcp.port"
+            inputmode="numeric"
+            @input="
+              $emit('updateMcp', {
+                port: Number(($event.target as HTMLInputElement).value),
+              })
+            "
+            @blur="$emit('commit')"
+          />
+        </label>
+
+        <label class="form-field">
+          <span>MCP Path</span>
+          <input
+            :value="settings.mcp.path"
+            @input="
+              $emit('updateMcp', {
+                path: ($event.target as HTMLInputElement).value,
+              })
+            "
+            @blur="$emit('commit')"
+          />
+        </label>
+
+        <p class="backend-mcp-endpoint">
+          Endpoint: http://{{ settings.mcp.host }}:{{ settings.mcp.port }}{{ settings.mcp.path }}
+        </p>
       </div>
     </section>
   </div>

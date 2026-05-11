@@ -40,6 +40,12 @@ impl SettingsManager {
         self.store.replace(next)
     }
 
+    pub fn replace_validated(&self, mut settings: AppSettings) -> AppResult<AppSettings> {
+        settings.normalize_for_local_save();
+        settings.validate().map_err(AppError::invalid_settings)?;
+        self.store.replace(settings)
+    }
+
     pub fn reset(&self) -> AppResult<AppSettings> {
         self.store.replace(AppSettings::default())
     }
