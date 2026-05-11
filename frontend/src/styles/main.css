@@ -2471,7 +2471,7 @@ button {
 
 .result-task-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -2480,7 +2480,24 @@ button {
   background: transparent;
   color: #0f172a;
   text-align: left;
+}
+
+.result-task-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
+}
+
+.task-delete-button {
+  padding: 7px 12px;
+  color: #b91c1c;
 }
 
 .tree-caret {
@@ -2550,15 +2567,20 @@ button {
 }
 
 .stem-file small,
-.stem-path {
+.stem-status {
   color: #64748b;
   font-size: 12px;
 }
 
-.stem-path {
+.stem-status {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  justify-self: start;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(15, 23, 42, 0.05);
+  font-weight: 700;
 }
 
 .stem-actions-inline {

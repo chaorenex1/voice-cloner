@@ -103,12 +103,12 @@ pub struct VoicePostProcessConfig {
 impl Default for VoicePostProcessConfig {
     fn default() -> Self {
         Self {
-            trim_silence: true,
+            trim_silence: false,
             denoise_mode: DenoiseMode::Standard,
             target_sample_rate: 48_000,
             channels: AudioChannelMode::Mono,
             loudness_normalization: true,
-            target_lufs: -16.0,
+            target_lufs: -18.0,
             true_peak_db: -1.5,
             peak_limiter: true,
         }

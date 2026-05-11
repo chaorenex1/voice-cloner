@@ -39,7 +39,18 @@ impl VoiceLibrary {
         if profile.created_at.timestamp_millis() == 0 {
             profile.created_at = Utc::now();
         }
-        profile.reference_audio_path = self.store_reference_audio(&voice_name, &profile.reference_audio_path)?;
+        profile.reference_audio_path = self.store_reference_audio(&profile.reference_audio_path, true)?;
+        self.write_profile(profile)
+    }
+
+    pub fn save_custom_voice_preserving_audio(&self, mut profile: CustomVoiceProfile) -> AppResult<CustomVoiceProfile> {
+        let voice_name = require_voice_name(&profile.voice_name)?;
+        profile.voice_name = voice_name;
+        profile.sync_status = SyncStatus::PendingSync;
+        if profile.created_at.timestamp_millis() == 0 {
+            profile.created_at = Utc::now();
+        }
+        profile.reference_audio_path = self.store_reference_audio(&profile.reference_audio_path, false)?;
         self.write_profile(profile)
     }
 
@@ -234,7 +245,7 @@ impl VoiceLibrary {
         Err(AppError::offline_job("failed to allocate custom voice audio file name"))
     }
 
-    fn store_reference_audio(&self, _voice_name: &str, source_audio_path: &str) -> AppResult<String> {
+    fn store_reference_audio(&self, source_audio_path: &str, normalize_audio: bool) -> AppResult<String> {
         let source_audio_path = require_non_empty("referenceAudioPath", source_audio_path)?;
         let source_path = PathBuf::from(source_audio_path);
         require_wav_file_name(
@@ -255,7 +266,11 @@ impl VoiceLibrary {
             std::fs::copy(&source_path, &target_path)
                 .map_err(|source| AppError::io("copying custom voice audio", source))?;
         }
-        normalize_reference_audio_or_cleanup(&target_path)?;
+        if normalize_audio {
+            normalize_reference_audio_or_cleanup(&target_path)?;
+        } else {
+            validate_reference_audio_or_cleanup(&target_path)?;
+        }
         Ok(target_path.to_string_lossy().into_owned())
     }
 }
@@ -325,6 +340,20 @@ fn normalize_reference_audio_or_cleanup(path: &Path) -> AppResult<()> {
         return Err(error);
     }
     Ok(())
+}
+
+fn validate_reference_audio_or_cleanup(path: &Path) -> AppResult<()> {
+    match hound::WavReader::open(path) {
+        Ok(reader) if reader.duration() > 0 => Ok(()),
+        Ok(_) => {
+            let _ = std::fs::remove_file(path);
+            Err(AppError::audio("reference wav contains no samples"))
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(path);
+            Err(AppError::audio(format!("failed to open reference wav: {error}")))
+        }
+    }
 }
 
 fn sanitize_voice_name(value: &str) -> String {
@@ -408,6 +437,18 @@ mod tests {
             "warm, calm"
         );
         assert_eq!(library.list_custom_voices().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn voice_library_can_preserve_processed_reference_audio_without_peak_normalizing() {
+        let library = library();
+        let mut profile = profile();
+        profile.reference_audio_path = reference_audio_path();
+
+        let saved = library.save_custom_voice_preserving_audio(profile).unwrap();
+
+        assert!(is_generated_voice_audio_file(&saved.reference_audio_path));
+        assert!(wav_peak(&std::fs::read(saved.reference_audio_path).unwrap()) < 0.25);
     }
 
     #[test]

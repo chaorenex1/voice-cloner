@@ -34,8 +34,21 @@ function isTerminal(job: VoiceSeparationJob): boolean {
   return ['ready', 'saved', 'failed', 'cancelled'].includes(job.status);
 }
 
-function stemPath(job: VoiceSeparationJob, stem: VoiceSeparationStemName): string | null {
+function resultPath(job: VoiceSeparationJob, stem: VoiceSeparationStemName): string | null {
+  if (stem === 'vocals') {
+    return job.postProcessedVocalsPath ?? job.stems?.vocals ?? null;
+  }
   return job.stems?.[stem] ?? null;
+}
+
+function resultStatus(job: VoiceSeparationJob, stem: VoiceSeparationStemName): string {
+  if (!resultPath(job, stem)) {
+    return '等待生成';
+  }
+  if (stem === 'vocals') {
+    return job.status === 'ready' ? '后处理人声，可保存为音色' : '后处理人声';
+  }
+  return '已生成';
 }
 
 function statusLabel(job: VoiceSeparationJob): string {
@@ -50,6 +63,20 @@ function statusLabel(job: VoiceSeparationJob): string {
       return '已取消';
     default:
       return `${Math.round(job.progress * 100)}%`;
+  }
+}
+
+function canDeleteJob(job: VoiceSeparationJob): boolean {
+  return isTerminal(job);
+}
+
+function confirmDeleteJob(job: VoiceSeparationJob): void {
+  if (!canDeleteJob(job)) {
+    return;
+  }
+  const confirmed = window.confirm(`确认删除「${job.sourceFileName}」的人声分离任务及本地产物？`);
+  if (confirmed) {
+    void separation.deleteJob(job);
   }
 }
 </script>
@@ -197,21 +224,31 @@ function statusLabel(job: VoiceSeparationJob): string {
           :key="job.jobId"
           class="result-task-node"
         >
-          <button
-            class="result-task-header"
-            type="button"
-            @click="separation.toggleJobExpanded(job.jobId)"
-          >
-            <span class="tree-caret">{{ separation.isJobExpanded(job.jobId) ? '▾' : '▸' }}</span>
-            <span class="task-main">
-              <strong>{{ job.sourceFileName }}</strong>
-              <small>{{ job.currentStageMessage }}</small>
-            </span>
+          <div class="result-task-header">
+            <button
+              class="result-task-toggle"
+              type="button"
+              @click="separation.toggleJobExpanded(job.jobId)"
+            >
+              <span class="tree-caret">{{ separation.isJobExpanded(job.jobId) ? '▾' : '▸' }}</span>
+              <span class="task-main">
+                <strong>{{ job.sourceFileName }}</strong>
+                <small>{{ job.currentStageMessage }}</small>
+              </span>
+            </button>
             <span class="task-meta">{{ job.sourceType === 'video' ? '视频' : '音频' }}</span>
             <span class="task-status" :class="`task-status--${job.status}`">{{
               statusLabel(job)
             }}</span>
-          </button>
+            <button
+              class="ghost-button task-delete-button"
+              type="button"
+              :disabled="!canDeleteJob(job) || separation.state.busy"
+              @click="confirmDeleteJob(job)"
+            >
+              删除
+            </button>
+          </div>
 
           <div v-if="separation.isJobExpanded(job.jobId)" class="result-stem-children">
             <div v-if="job.errorMessage" class="settings-warning">
@@ -223,18 +260,18 @@ function statusLabel(job: VoiceSeparationJob): string {
               v-for="stem in stemRows"
               :key="stem.key"
               class="result-stem-row"
-              :class="{ 'result-stem-row--missing': !stemPath(job, stem.key) }"
+              :class="{ 'result-stem-row--missing': !resultPath(job, stem.key) }"
             >
               <span class="stem-file">
                 <strong>{{ stem.label }}</strong>
                 <small>{{ stem.fileName }}</small>
               </span>
-              <span class="stem-path">{{ stemPath(job, stem.key) ?? '等待生成' }}</span>
+              <span class="stem-status">{{ resultStatus(job, stem.key) }}</span>
               <span class="stem-actions-inline">
                 <button
                   class="ghost-button"
                   type="button"
-                  :disabled="!stemPath(job, stem.key) || separation.state.busy"
+                  :disabled="!resultPath(job, stem.key) || separation.state.busy"
                   @click="separation.togglePreview(job, stem.key)"
                 >
                   {{
@@ -247,7 +284,7 @@ function statusLabel(job: VoiceSeparationJob): string {
                 <button
                   class="ghost-button"
                   type="button"
-                  :disabled="!stemPath(job, stem.key) || separation.state.busy"
+                  :disabled="!resultPath(job, stem.key) || separation.state.busy"
                   @click="separation.downloadStem(job, stem.key)"
                 >
                   下载

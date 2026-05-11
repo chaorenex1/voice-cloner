@@ -132,10 +132,13 @@ impl FfmpegSidecar {
 
     fn run(&self, args: Vec<String>, log_path: &Path, context: &'static str) -> AppResult<()> {
         let output = Command::new(&self.binary_path)
-            .args(args)
+            .args(&args)
             .output()
             .map_err(|source| AppError::io("starting ffmpeg sidecar", source))?;
         let mut log = Vec::new();
+        log.extend_from_slice(
+            format!("command: {}\nargs: {}\n", self.binary_path.display(), args.join(" ")).as_bytes(),
+        );
         log.extend_from_slice(&output.stdout);
         if !output.stderr.is_empty() {
             log.extend_from_slice(b"\n--- stderr ---\n");
@@ -161,9 +164,7 @@ fn post_process_filter(config: &VoicePostProcessConfig) -> String {
         DenoiseMode::Strong => filters.push("afftdn=nr=20:nf=-50".to_string()),
     }
     if config.trim_silence {
-        filters.push(
-            "silenceremove=start_periods=1:start_threshold=-45dB:stop_periods=1:stop_threshold=-45dB".to_string(),
-        );
+        filters.push("silenceremove=start_periods=1:start_duration=0.2:start_threshold=-50dB".to_string());
     }
     if config.loudness_normalization {
         filters.push(format!(

@@ -136,7 +136,7 @@ export const lufsPresetOptions = [
 ] as const;
 
 export const defaultPostProcessConfig: VoicePostProcessConfig = {
-  trimSilence: true,
+  trimSilence: false,
   denoiseMode: 'standard',
   targetSampleRate: 48000,
   channels: 'mono',

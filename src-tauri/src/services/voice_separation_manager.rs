@@ -18,7 +18,7 @@ use crate::{
         voice::{CustomVoiceProfile, SyncStatus},
         voice_separation::{
             VoicePostProcessConfig, VoiceSeparationJob, VoiceSeparationModel, VoiceSeparationSourceType,
-            VoiceSeparationStatus, VoiceSeparationStems,
+            VoiceSeparationStatus, VoiceSeparationStem, VoiceSeparationStems,
         },
     },
     services::{
@@ -241,12 +241,13 @@ impl VoiceSeparationManager {
         jobs
     }
 
-    pub fn stem_path(
-        &self,
-        job_id: &str,
-        stem: &crate::domain::voice_separation::VoiceSeparationStem,
-    ) -> AppResult<PathBuf> {
+    pub fn stem_path(&self, job_id: &str, stem: &VoiceSeparationStem) -> AppResult<PathBuf> {
         let job = self.get_job(job_id)?;
+        if matches!(stem, VoiceSeparationStem::Vocals) {
+            if let Some(path) = job.post_processed_vocals_path {
+                return Ok(PathBuf::from(path));
+            }
+        }
         let stems = job
             .stems
             .as_ref()
@@ -260,7 +261,7 @@ impl VoiceSeparationManager {
     pub fn copy_stem_to(
         &self,
         job_id: &str,
-        stem: &crate::domain::voice_separation::VoiceSeparationStem,
+        stem: &VoiceSeparationStem,
         target_path: impl Into<PathBuf>,
     ) -> AppResult<VoiceSeparationDownloadResult> {
         let source_path = self.stem_path(job_id, stem)?;
@@ -325,7 +326,7 @@ impl VoiceSeparationManager {
             last_synced_at: None,
             created_at: Utc::now(),
         };
-        let saved = library.save_custom_voice(profile)?;
+        let saved = library.save_custom_voice_preserving_audio(profile)?;
         self.update_job(job_id, |job| {
             job.voice_name = Some(saved.voice_name.clone());
             job.reference_text = Some(reference_text);
@@ -335,7 +336,12 @@ impl VoiceSeparationManager {
         Ok(saved)
     }
 
-    fn run_job(&self, mut job: VoiceSeparationJob, config: VoicePostProcessConfig) -> AppResult<VoiceSeparationJob> {
+    fn run_job(
+        &self,
+        mut job: VoiceSeparationJob,
+        mut config: VoicePostProcessConfig,
+    ) -> AppResult<VoiceSeparationJob> {
+        config.trim_silence = false;
         let paths = JobPaths::new(self.job_dir(&job.job_id));
         self.prepare_job_dirs(&job.job_id)?;
         let source_path = PathBuf::from(&job.source_path);
@@ -731,6 +737,47 @@ mod tests {
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].job_id, older.job_id);
         assert!(jobs.iter().any(|job| job.job_id == newer.job_id));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn voice_separation_vocals_stem_path_prefers_post_processed_audio() {
+        let root = unique_temp_dir("processed-vocals-path");
+        let source_path = root.join("input.wav");
+        let processed_path = root.join("processed-vocals.wav");
+        let raw_path = root.join("raw-vocals.wav");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&source_path, b"placeholder").unwrap();
+        std::fs::write(&processed_path, b"processed").unwrap();
+        std::fs::write(&raw_path, b"raw").unwrap();
+
+        let manager = VoiceSeparationManager::new(root.join("jobs")).unwrap();
+        let job = manager
+            .create_job(CreateVoiceSeparationJobRequest {
+                source_path: source_path.to_string_lossy().into_owned(),
+                model: None,
+                post_process_config: None,
+            })
+            .unwrap();
+        manager
+            .update_job(&job.job_id, |job| {
+                job.stems = Some(VoiceSeparationStems {
+                    vocals: Some(raw_path.to_string_lossy().into_owned()),
+                    no_vocals: None,
+                    drums: None,
+                    bass: None,
+                    other: None,
+                });
+                job.post_processed_vocals_path = Some(processed_path.to_string_lossy().into_owned());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            manager.stem_path(&job.job_id, &VoiceSeparationStem::Vocals).unwrap(),
+            processed_path
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

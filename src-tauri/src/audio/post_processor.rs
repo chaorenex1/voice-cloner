@@ -49,6 +49,14 @@ impl AudioPostProcessor {
         if output_metrics.peak >= 0.999 {
             warnings.push("output peak is close to clipping".into());
         }
+        if !config.trim_silence
+            && duration_delta_exceeds_tolerance(input_metrics.duration_seconds, output_metrics.duration_seconds)
+        {
+            return Err(AppError::audio(format!(
+                "processed vocals duration changed unexpectedly: input {:.3}s, output {:.3}s",
+                input_metrics.duration_seconds, output_metrics.duration_seconds
+            )));
+        }
         if !warnings.is_empty()
             && warnings
                 .iter()
@@ -169,5 +177,27 @@ fn linear_to_db(value: f32) -> f32 {
         -120.0
     } else {
         20.0 * value.log10()
+    }
+}
+
+fn duration_delta_exceeds_tolerance(input_seconds: f64, output_seconds: f64) -> bool {
+    let tolerance = (input_seconds * 0.005).max(0.05);
+    (input_seconds - output_seconds).abs() > tolerance
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duration_delta_exceeds_tolerance;
+
+    #[test]
+    fn duration_delta_allows_small_resampling_drift() {
+        assert!(!duration_delta_exceeds_tolerance(30.0, 30.04));
+        assert!(!duration_delta_exceeds_tolerance(300.0, 301.0));
+    }
+
+    #[test]
+    fn duration_delta_rejects_truncated_processed_audio() {
+        assert!(duration_delta_exceeds_tolerance(30.0, 25.0));
+        assert!(duration_delta_exceeds_tolerance(3.0, 2.8));
     }
 }

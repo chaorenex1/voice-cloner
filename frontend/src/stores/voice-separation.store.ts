@@ -168,6 +168,10 @@ function runningJob(): VoiceSeparationJob | null {
   return state.jobs.find((job) => !isTerminal(job)) ?? null;
 }
 
+function isJobPlaying(jobId: string): boolean {
+  return state.playingJobId === jobId;
+}
+
 async function refreshVoiceLibraryAfterSave(voiceName: string): Promise<void> {
   invalidateCustomVoiceCache();
   const voiceLibrary = useVoiceLibraryStore();
@@ -251,7 +255,7 @@ export function useVoiceSeparationStore() {
   }
 
   function updatePostProcessConfig(patch: Partial<VoicePostProcessConfig>): void {
-    state.postProcessConfig = { ...state.postProcessConfig, ...patch };
+    state.postProcessConfig = { ...state.postProcessConfig, ...patch, trimSilence: false };
   }
 
   async function start(): Promise<void> {
@@ -262,15 +266,16 @@ export function useVoiceSeparationStore() {
     state.busy = true;
     state.lastError = null;
     try {
+      const postProcessConfig = { ...state.postProcessConfig, trimSilence: false };
       const created = await createVoiceSeparationJob({
         sourcePath: state.sourcePath,
         model: state.model,
-        postProcessConfig: state.postProcessConfig,
+        postProcessConfig,
       });
       upsertJob(created);
       state.expandedJobIds = state.expandedJobIds.filter((id) => id !== created.jobId);
       state.lastMessage = '任务已创建，正在后台分离人声...';
-      await startVoiceSeparationJob(created.jobId, { postProcessConfig: state.postProcessConfig });
+      await startVoiceSeparationJob(created.jobId, { postProcessConfig });
       startPolling(created.jobId);
     } catch (error) {
       state.lastError = messageFromError(error);
@@ -394,7 +399,10 @@ export function useVoiceSeparationStore() {
       });
       await refreshVoiceLibraryAfterSave(profile.voiceName);
       await refreshJob(job);
-      state.lastMessage = `已保存自定义音色：${profile.voiceName}`;
+      state.lastMessage =
+        profile.syncStatus === 'synced'
+          ? `已保存并同步 FunSpeech：${profile.voiceName}`
+          : `已保存自定义音色：${profile.voiceName}，FunSpeech 同步状态：${profile.syncStatus}`;
       closeSaveVoiceDialog();
       return profile;
     } catch (error) {
@@ -426,9 +434,18 @@ export function useVoiceSeparationStore() {
   }
 
   async function deleteJob(job: VoiceSeparationJob): Promise<void> {
+    if (!isTerminal(job)) {
+      state.lastError = '运行中的人声分离任务不能删除';
+      return;
+    }
     state.busy = true;
     state.lastError = null;
     try {
+      if (isJobPlaying(job.jobId)) {
+        const stopped = await stopVoiceSeparationPreview();
+        state.playingJobId = stopped.playingJobId ?? null;
+        state.playingStem = stopped.playingStem ?? null;
+      }
       const result = await deleteVoiceSeparationJob(job.jobId);
       state.jobs = state.jobs.filter((item) => item.jobId !== result.jobId);
       state.expandedJobIds = state.expandedJobIds.filter((id) => id !== result.jobId);

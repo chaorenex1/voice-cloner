@@ -215,9 +215,18 @@ pub fn save_separated_vocals_as_custom_voice(
     job_id: String,
     request: SaveSeparatedVocalsRequest,
 ) -> ApiResult<CustomVoiceProfile> {
-    state
+    let saved = state
         .voice_separation()
         .save_as_custom_voice(&job_id, request, state.voice_library())
+        .map_err(ApiError::from)?;
+    let settings = state.settings().load_or_default().map_err(ApiError::from)?;
+    state
+        .voice_sync()
+        .register_voice(&saved.voice_name, state.voice_library(), &settings)
+        .map_err(ApiError::from)?;
+    state
+        .voice_library()
+        .get_custom_voice(&saved.voice_name)
         .map_err(Into::into)
 }
 
