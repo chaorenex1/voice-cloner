@@ -18,7 +18,7 @@ env:
   PNPM_VERSION: 10
 
 jobs:
-  frontend-and-rust:
+  checks:
     name: frontend + rust checks
     runs-on: ubuntu-22.04
     steps:
@@ -41,7 +41,10 @@ jobs:
             patchelf \
             libasound2-dev \
             libfuse2 \
-            rpm
+            rpm \
+            tar \
+            unzip \
+            xz-utils
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -53,6 +56,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            frontend/pnpm-lock.yaml
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -62,11 +68,14 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install frontend dependencies
+        run: pnpm --dir frontend install --frozen-lockfile
+
       - name: Build frontend
-        run: pnpm --dir frontend build
+        run: pnpm build
 
       - name: Check Rust
         working-directory: src-tauri
@@ -77,18 +86,18 @@ jobs:
         run: cargo test --lib
 
   desktop:
-    name: desktop (${{ matrix.platform }})
-    needs: frontend-and-rust
+    name: desktop (${{ matrix.artifact-name }})
+    needs: checks
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: ubuntu-22.04
-            artifact-name: linux
+            artifact-name: linux-x64
           - platform: windows-latest
-            artifact-name: windows
+            artifact-name: windows-x64
           - platform: macos-latest
-            artifact-name: macos
+            artifact-name: macos-arm64
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
@@ -111,7 +120,10 @@ jobs:
             patchelf \
             libasound2-dev \
             libfuse2 \
-            rpm
+            rpm \
+            tar \
+            unzip \
+            xz-utils
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -123,6 +135,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            frontend/pnpm-lock.yaml
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -132,11 +147,14 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install frontend dependencies
+        run: pnpm --dir frontend install --frozen-lockfile
+
       - name: Build Tauri desktop bundle
-        run: pnpm tauri build
+        run: pnpm tauri:build
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
@@ -151,130 +169,3 @@ jobs:
             src-tauri/target/release/bundle/**/*.app.tar.gz
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
-
-  android:
-    name: android
-    needs: frontend-and-rust
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            wget \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            libxdo-dev \
-            libssl-dev \
-            librsvg2-dev \
-            patchelf \
-            libasound2-dev \
-            libfuse2 \
-            rpm
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK
-        run: |
-          sdkmanager "ndk;27.0.12077973"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Initialize generated Android project
-        run: pnpm tauri:android:init
-
-      - name: Build Android APK
-        run: pnpm tauri:android:build
-
-      - name: Upload Android artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: voice-cloner-android
-          if-no-files-found: error
-          path: |
-            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-            src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
-
-  ios:
-    name: ios
-    needs: frontend-and-rust
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios-sim
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Initialize generated iOS project
-        run: pnpm tauri:ios:init
-
-      - name: Build iOS app
-        run: pnpm tauri:ios:build
-
-      - name: Upload iOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: voice-cloner-ios
-          if-no-files-found: warn
-          path: |
-            src-tauri/gen/apple/build/**/*.ipa
-            src-tauri/gen/apple/build/**/*.app
-            src-tauri/gen/apple/**/*.xcarchive
