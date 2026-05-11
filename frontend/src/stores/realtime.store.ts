@@ -90,6 +90,8 @@ const state = reactive<RealtimeState>({
 });
 
 const LAST_REALTIME_VOICE_STORAGE_KEY = 'voice-cloner:last-realtime-voice-name';
+const SWITCH_CONFIRM_TIMEOUT_MS = 5000;
+const SWITCH_CONFIRM_POLL_MS = 150;
 
 function runtimeParams(): RuntimeParams {
   return {
@@ -114,6 +116,14 @@ function hasVoice(
   return Boolean(voiceName && voices.some((voice) => voice.voiceName === voiceName));
 }
 
+function isRealtimeVoiceSelectable(voice: VoiceSummary): boolean {
+  return voice.source === 'remote' || voice.source === 'preset' || voice.syncStatus === 'synced';
+}
+
+function selectableRealtimeVoices(voices: VoiceSummary[]): VoiceSummary[] {
+  return voices.filter(isRealtimeVoiceSelectable);
+}
+
 function lastRealtimeVoiceName(): string | null {
   if (typeof window === 'undefined') {
     return null;
@@ -136,21 +146,31 @@ function clearLastRealtimeVoiceName(): void {
 }
 
 function resolveSelectedVoiceName(voices: VoiceSummary[]): string | null {
-  if (hasVoice(voices, state.selectedVoiceName)) {
+  const availableVoices = selectableRealtimeVoices(voices);
+  if (hasVoice(availableVoices, state.selectedVoiceName)) {
     return state.selectedVoiceName;
   }
 
   const lastVoiceName = lastRealtimeVoiceName();
-  if (hasVoice(voices, lastVoiceName)) {
+  if (hasVoice(availableVoices, lastVoiceName)) {
     return lastVoiceName;
   }
 
-  return voices[0]?.voiceName ?? null;
+  return availableVoices[0]?.voiceName ?? null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 export function useRealtimeStore() {
   const selectedVoice = computed(() =>
     state.voices.find((voice) => voice.voiceName === state.selectedVoiceName)
+  );
+  const selectedVoiceIsSelectable = computed(() =>
+    selectedVoice.value ? isRealtimeVoiceSelectable(selectedVoice.value) : false
   );
 
   const isRunning = computed(() => isRunningStatus(state.session?.status));
@@ -170,8 +190,28 @@ export function useRealtimeStore() {
   const canControlStream = computed(() => Boolean(state.session) && isRunning.value && !state.busy);
 
   const canStart = computed(
-    () => Boolean(state.selectedVoiceName) && !state.busy && !isRunning.value
+    () => Boolean(state.selectedVoiceName) && selectedVoiceIsSelectable.value && !state.busy && !isRunning.value
   );
+
+  async function waitForConfiguredVoice(
+    session: RealtimeSession,
+    voiceName: string
+  ): Promise<RealtimeStreamSnapshot> {
+    const deadline = Date.now() + SWITCH_CONFIRM_TIMEOUT_MS;
+    let latestSnapshot: RealtimeStreamSnapshot | null = null;
+    while (Date.now() <= deadline) {
+      latestSnapshot = await getRealtimeStreamSnapshot(session);
+      if (latestSnapshot.lastError) {
+        throw new Error(latestSnapshot.lastError);
+      }
+      if (latestSnapshot.configuredVoiceName === voiceName) {
+        return latestSnapshot;
+      }
+      await sleep(SWITCH_CONFIRM_POLL_MS);
+    }
+    const configuredVoice = latestSnapshot?.configuredVoiceName || 'unknown';
+    throw new Error(`FunSpeech 未确认切换到 ${voiceName}，当前服务端音色为 ${configuredVoice}`);
+  }
 
   async function load(): Promise<void> {
     state.loading = true;
@@ -374,6 +414,17 @@ export function useRealtimeStore() {
 
   async function selectVoice(voiceName: string): Promise<void> {
     const previousVoice = state.selectedVoiceName;
+    const voice = state.voices.find((candidate) => candidate.voiceName === voiceName);
+    if (voice && !isRealtimeVoiceSelectable(voice)) {
+      state.lastError = `${voice.displayName || voice.voiceName} 尚未同步到 FunSpeech，不能用于实时变声`;
+      state.lastMessage = '请先在音色库同步该音色后再切换实时变声';
+      logRealtimeDebug('store:select-voice:blocked-unsynced', {
+        voiceName,
+        syncStatus: voice.syncStatus,
+        source: voice.source,
+      });
+      return;
+    }
     state.selectedVoiceName = voiceName;
     saveLastRealtimeVoiceName(voiceName);
     logRealtimeDebug('store:select-voice:begin', {
@@ -390,12 +441,12 @@ export function useRealtimeStore() {
       return;
     }
     state.busy = true;
+    state.lastError = null;
+    state.lastMessage = `正在通知 FunSpeech 切换到 ${voiceName}`;
     try {
       state.session = await switchRealtimeVoice(state.session.sessionId, voiceName);
-      if (isRealtimeDebugEnabled.value) {
-        await refreshSnapshot();
-      }
-      state.lastMessage = `FunSpeech 已切换到 ${voiceName}`;
+      state.snapshot = await waitForConfiguredVoice(state.session, voiceName);
+      state.lastMessage = `FunSpeech 已确认切换到 ${voiceName}`;
       logRealtimeDebug('store:select-voice:success', {
         session: summarizeRealtimeSession(state.session),
         snapshot: state.snapshot ? summarizeRealtimeSnapshot(state.snapshot) : null,
@@ -489,12 +540,14 @@ export function useRealtimeStore() {
   return {
     state,
     selectedVoice,
+    selectedVoiceIsSelectable,
     isRunning,
     isRealtimeDebugEnabled,
     isInputCapturing,
     isMonitoring,
     canControlStream,
     canStart,
+    isRealtimeVoiceSelectable,
     load,
     start,
     stop,

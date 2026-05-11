@@ -403,14 +403,20 @@ onBeforeUnmount(() => {
               'voice-drawer-card--active': voice.voiceName === realtime.state.selectedVoiceName,
             }"
           >
-            <button type="button" @click="selectVoiceFromDrawer(voice.voiceName)">
+            <button
+              type="button"
+              :disabled="!realtime.isRealtimeVoiceSelectable(voice)"
+              @click="selectVoiceFromDrawer(voice.voiceName)"
+            >
               <strong>{{ voice.displayName }}</strong>
               <span>{{
                 voice.source === 'preset'
                   ? '预置音色'
                   : voice.source === 'remote'
                     ? '云端音色'
-                    : '自定义音色'
+                    : voice.syncStatus === 'synced'
+                      ? '已同步自定义音色'
+                      : '未同步，需先同步到 FunSpeech'
               }}</span>
               <small>{{ voice.referenceTextPreview || '点击选择为实时变声目标音色' }}</small>
             </button>

@@ -224,7 +224,7 @@ async function refreshCloudRuntime(): Promise<void> {
         <h3>采样建议</h3>
         <ul>
           <li>名称保持可读，后续会转成稳定 voiceName。</li>
-          <li>参考文本建议 10-30 秒音频可完整覆盖。</li>
+          <li>参考文本建议 10 秒音频可完整覆盖。</li>
           <li>参考音频只允许 wav，录音尽量干净。</li>
         </ul>
       </aside>

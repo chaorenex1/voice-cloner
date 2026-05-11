@@ -303,15 +303,15 @@ pub fn switch_realtime_voice(
     request: SwitchRealtimeVoiceRequest,
 ) -> ApiResult<RealtimeSession> {
     tracing::debug!(%session_id, voice_name = %request.voice_name, "switch realtime voice requested");
-    state
+    let session = state
         .sessions()
         .switch_realtime_voice(&session_id, request)
-        .inspect(|session| {
-            let _ = state
-                .realtime_streams()
-                .switch_voice(&session_id, session.voice_name.clone());
-        })
-        .map_err(Into::into)
+        .map_err(ApiError::from)?;
+    state
+        .realtime_streams()
+        .switch_voice(&session_id, session.voice_name.clone())
+        .map_err(ApiError::from)?;
+    Ok(session)
 }
 
 #[tauri::command]

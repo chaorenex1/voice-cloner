@@ -421,7 +421,17 @@ impl RealtimeStreamManager {
     }
 
     pub fn switch_voice(&self, session_id: &str, voice_name: String) -> AppResult<()> {
-        self.send_control(session_id, RealtimeControl::SwitchVoice(voice_name))
+        let display_voice_name = voice_name.clone();
+        self.patch_and_send_control(
+            session_id,
+            move |state| {
+                state.pipeline_stage = "voice_switch_pending".into();
+                state.last_event = Some("voice_switch_requested".into());
+                state.last_prompt = Some(format!("正在切换到 {display_voice_name}，旧音色输出缓存已清空"));
+                state.last_error = None;
+            },
+            RealtimeControl::SwitchVoice(voice_name),
+        )
     }
 
     pub fn start_input(&self, session_id: &str, device: cpal::Device) -> AppResult<()> {
@@ -839,6 +849,32 @@ async fn run_realtime_voice_stream(
                             );
                         }
                         RealtimeControl::SwitchVoice(voice_name) => {
+                            let dropped_metadata = pending_output_chunks.len();
+                            let dropped_playback_ms = playback_buffer.queued_ms(format);
+                            pending_sends.clear();
+                            pending_output_chunks.clear();
+                            pending_client_events.clear();
+                            playback_buffer.clear();
+                            if let Some(output) = monitor_output.as_ref() {
+                                output.clear_buffer();
+                            }
+                            output_timeline_started_at = Instant::now();
+                            last_playable_output_at = None;
+                            patch_snapshot(&snapshot, |state| {
+                                reset_output_flow_metrics(state);
+                                state.pipeline_stage = "voice_switch_pending".into();
+                                state.last_event = Some("voice_switch_requested".into());
+                                state.last_prompt = Some(format!("正在切换到 {voice_name}，旧音色输出缓存已清空"));
+                                if debug_enabled {
+                                    push_ledger(state, "voice_switch", "client_output_flushed", |entry| {
+                                        entry.playback_queue_ms = Some(0);
+                                        entry.status = Some("flushed".into());
+                                        entry.message = Some(format!(
+                                            "dropped_metadata={dropped_metadata} dropped_playback_ms={dropped_playback_ms}"
+                                        ));
+                                    });
+                                }
+                            });
                             let message = json!({
                                 "event": "switch_voice",
                                 "type": "update_voice",
@@ -1798,6 +1834,12 @@ impl OrderedPlaybackBuffer {
     fn queued_ms(&self, format: PcmFormat) -> usize {
         self.pending.len() * format.frame_ms as usize
     }
+
+    fn clear(&mut self) {
+        self.expected_next_index = None;
+        self.pending.clear();
+        self.playback_started = self.prebuffer_ms == 0;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2009,6 +2051,7 @@ impl RealtimeInputFrameCutter {
 
 enum RealtimeMonitorCommand {
     Frame { samples: Vec<f32>, source_sample_rate: u32 },
+    ClearBuffer,
     Stop,
 }
 
@@ -2044,6 +2087,7 @@ impl RealtimeMonitorPlayer {
                                 tracing::warn!(%error, "realtime monitor output write failed");
                             }
                         }
+                        Ok(RealtimeMonitorCommand::ClearBuffer) => output.clear_buffer(),
                         Ok(RealtimeMonitorCommand::Stop) | Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(std_mpsc::RecvTimeoutError::Timeout) => output.suspend_if_idle(),
                     }
@@ -2063,6 +2107,10 @@ impl RealtimeMonitorPlayer {
                 source_sample_rate: frame.format.sample_rate,
             })
             .is_ok()
+    }
+
+    fn clear_buffer(&self) -> bool {
+        self.tx.send(RealtimeMonitorCommand::ClearBuffer).is_ok()
     }
 
     fn stop(self) {
@@ -2150,6 +2198,13 @@ impl RealtimeMonitorOutput {
             .expect("realtime monitor buffer lock poisoned")
             .available()
     }
+
+    fn clear_buffer(&mut self) {
+        self.buffer
+            .lock()
+            .expect("realtime monitor buffer lock poisoned")
+            .clear();
+    }
 }
 
 #[derive(Default)]
@@ -2189,6 +2244,11 @@ impl MonitorSampleBuffer {
 
     fn available(&self) -> usize {
         self.samples.len().saturating_sub(self.cursor)
+    }
+
+    fn clear(&mut self) {
+        self.samples.clear();
+        self.cursor = 0;
     }
 
     fn compact_if_needed(&mut self) {
@@ -3030,9 +3090,10 @@ mod tests {
         apply_asr_event, apply_json_event, apply_output_drop_status, apply_realtime_post_process, apply_tts_event,
         client_audio_backpressure_event, client_audio_played_event, funspeech_realtime_format,
         funspeech_realtime_parameters, is_final_asr_event, resample_samples_linear, run_synthesis_message,
-        start_synthesis_message, start_transcription_message, text_from_asr_event, OrderedPlaybackBuffer,
-        PendingOutputChunk, RealtimeInputFrameCutter, RealtimeMonitorOutput, RealtimeStreamSnapshot,
-        MONITOR_OUTPUT_IDLE_CHECK_MS, PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_JITTER_PREBUFFER_MS, PLAYBACK_MAX_PENDING,
+        start_synthesis_message, start_transcription_message, text_from_asr_event, MonitorSampleBuffer,
+        OrderedPlaybackBuffer, PendingOutputChunk, RealtimeInputFrameCutter, RealtimeMonitorOutput,
+        RealtimeStreamSnapshot, MONITOR_OUTPUT_IDLE_CHECK_MS, PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_JITTER_PREBUFFER_MS,
+        PLAYBACK_MAX_PENDING,
     };
 
     #[test]
@@ -3295,6 +3356,63 @@ mod tests {
             .expect("chunk 2 should queue");
         let (index, _) = buffer.pop_playable(format).expect("prebuffer is full");
         assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn ordered_playback_buffer_clear_drops_pending_audio_and_resets_sequence() {
+        let format = PcmFormat::default();
+        let mut buffer = OrderedPlaybackBuffer::new(PLAYBACK_GAP_SKIP_PENDING, PLAYBACK_MAX_PENDING, 0);
+
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: Some("old_chunk".into()),
+                    tts_job_id: Some("old_tts".into()),
+                    audio_chunk_index: Some(7),
+                    expected_bytes: Some(2),
+                },
+                vec![7, 7],
+                Some(10),
+            )
+            .expect("old audio should queue before voice switch");
+        assert_eq!(buffer.queued_ms(format), format.frame_ms as usize);
+
+        buffer.clear();
+
+        assert_eq!(buffer.queued_ms(format), 0);
+        assert!(buffer.pop_playable(format).is_none());
+        buffer
+            .enqueue(
+                PendingOutputChunk {
+                    chunk_id: Some("new_chunk".into()),
+                    tts_job_id: Some("new_tts".into()),
+                    audio_chunk_index: Some(1),
+                    expected_bytes: Some(2),
+                },
+                vec![1, 1],
+                Some(20),
+            )
+            .expect("new audio should queue after voice switch");
+        let (index, frame) = buffer
+            .pop_playable(format)
+            .expect("new audio should play from its own sequence");
+        assert_eq!(index, 1);
+        assert_eq!(frame.metadata.tts_job_id.as_deref(), Some("new_tts"));
+    }
+
+    #[test]
+    fn monitor_sample_buffer_clear_discards_pending_samples() {
+        let mut buffer = MonitorSampleBuffer::default();
+        buffer.extend_bounded(&[0.25, 0.5, 0.75], 16);
+        assert_eq!(buffer.available(), 3);
+        assert_eq!(buffer.next_or_zero(), 0.25);
+
+        buffer.clear();
+
+        assert_eq!(buffer.available(), 0);
+        assert_eq!(buffer.next_or_zero(), 0.0);
+        buffer.extend_bounded(&[1.0], 16);
+        assert_eq!(buffer.next_or_zero(), 1.0);
     }
 
     #[test]

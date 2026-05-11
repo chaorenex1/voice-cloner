@@ -10,6 +10,7 @@ use crate::{
     audio::{
         normalizer::{normalize_wav_file_in_place, AudioNormalizationConfig},
         post_processor::AudioPostProcessor,
+        reference_audio::prepare_voice_reference_wav_file_in_place,
     },
     domain::{
         voice::{CustomVoiceProfile, SyncStatus},
@@ -78,6 +79,7 @@ impl VoiceLibrary {
         let target_path = self.generated_audio_path()?;
         std::fs::write(&target_path, wav_bytes).map_err(|source| AppError::io("writing custom voice wav", source))?;
         normalize_reference_audio_or_cleanup(&target_path)?;
+        prepare_reference_audio_or_cleanup(&target_path)?;
         remove_file_if_present(&previous_audio_path, Some(&target_path))?;
         profile.reference_audio_path = target_path.to_string_lossy().into_owned();
         self.write_profile(profile)
@@ -156,6 +158,7 @@ impl VoiceLibrary {
         let target_path = self.generated_audio_path()?;
         std::fs::write(&target_path, processed)
             .map_err(|source| AppError::io("writing post-processed custom voice wav", source))?;
+        prepare_reference_audio_or_cleanup(&target_path)?;
         validate_reference_audio_or_cleanup(&target_path)?;
         remove_file_if_present(&previous_audio_path, Some(&target_path))?;
         profile.reference_audio_path = target_path.to_string_lossy().into_owned();
@@ -310,7 +313,9 @@ impl VoiceLibrary {
         }
         if normalize_audio {
             normalize_reference_audio_or_cleanup(&target_path)?;
+            prepare_reference_audio_or_cleanup(&target_path)?;
         } else {
+            prepare_reference_audio_or_cleanup(&target_path)?;
             validate_reference_audio_or_cleanup(&target_path)?;
         }
         Ok(target_path.to_string_lossy().into_owned())
@@ -384,6 +389,14 @@ fn normalize_reference_audio_or_cleanup(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn prepare_reference_audio_or_cleanup(path: &Path) -> AppResult<()> {
+    if let Err(error) = prepare_voice_reference_wav_file_in_place(path) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn validate_reference_audio_or_cleanup(path: &Path) -> AppResult<()> {
     match hound::WavReader::open(path) {
         Ok(reader) if reader.duration() > 0 => Ok(()),
@@ -439,6 +452,14 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    fn long_reference_audio_path() -> String {
+        let source_dir = temp_root("long-source-audio");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let path = source_dir.join("long-preview.wav");
+        std::fs::write(&path, wav_bytes_with_rate(&vec![0.2; 11_000], 1_000)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
     fn reference_audio_file_name(path: &str) -> String {
         std::path::Path::new(path)
             .file_name()
@@ -491,6 +512,20 @@ mod tests {
 
         assert!(is_generated_voice_audio_file(&saved.reference_audio_path));
         assert!(wav_peak(&std::fs::read(saved.reference_audio_path).unwrap()) < 0.25);
+    }
+
+    #[test]
+    fn voice_library_preserving_audio_truncates_long_reference_with_smooth_tail() {
+        let library = library();
+        let mut profile = profile();
+        profile.reference_audio_path = long_reference_audio_path();
+
+        let saved = library.save_custom_voice_preserving_audio(profile).unwrap();
+        let bytes = std::fs::read(saved.reference_audio_path).unwrap();
+
+        assert_eq!(wav_sample_count(&bytes), 10_000);
+        assert_eq!(last_wav_sample(&bytes), 0);
+        assert!(wav_peak(&bytes) < 0.25);
     }
 
     #[test]
@@ -579,9 +614,13 @@ mod tests {
     }
 
     fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+        wav_bytes_with_rate(samples, 16_000)
+    }
+
+    fn wav_bytes_with_rate(samples: &[f32], sample_rate: u32) -> Vec<u8> {
         let spec = hound::WavSpec {
             channels: 1,
-            sample_rate: 16_000,
+            sample_rate,
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
@@ -594,6 +633,15 @@ mod tests {
             writer.finalize().unwrap();
         }
         cursor.into_inner()
+    }
+
+    fn wav_sample_count(bytes: &[u8]) -> u32 {
+        hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap().duration()
+    }
+
+    fn last_wav_sample(bytes: &[u8]) -> i16 {
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
+        reader.samples::<i16>().last().unwrap().unwrap()
     }
 
     fn wav_peak(bytes: &[u8]) -> f32 {
